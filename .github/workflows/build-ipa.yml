@@ -1,5 +1,4 @@
 name: IPA
-
 on:
   workflow_dispatch:
     inputs:
@@ -13,20 +12,17 @@ on:
         required: false
         default: "https://www.dropbox.com/scl/fi/vtz8kt6qhflo7nniwfa2n/com.google.ios.youtube-21.35.3-eeveedecrypter.ipa?rlkey=qkj32r23mh4axhjvpypd09jsp&st=41a116ab&dl=1"
         type: string
-
 permissions:
   contents: read
-
 jobs:
   build:
     uses: ./.github/workflows/build-deb.yml
-
   plan:
     runs-on: ubuntu-latest
     outputs:
       targets: ${{ steps.targets.outputs.targets }}
     steps:
-      - name: Collect IPA bases
+      - name: Collect IPA bases x deb variants
         id: targets
         env:
           IPA_URL: ${{ inputs.ipa_url }}
@@ -36,13 +32,20 @@ jobs:
           import json
           import os
 
-          targets = [{"label": "ios16", "url": os.environ["IPA_URL"]}]
+          ipa_bases = [{"label": "ios16", "url": os.environ["IPA_URL"]}]
           second = os.environ.get("IPA_URL_IOS17", "").strip()
           if second:
-              targets.append({"label": "ios17", "url": second})
+              ipa_bases.append({"label": "ios17", "url": second})
+
+          deb_variants = ["rootless", "roothide"]
+
+          targets = [
+              {"label": base["label"], "url": base["url"], "deb_variant": variant}
+              for base in ipa_bases
+              for variant in deb_variants
+          ]
           print("targets=" + json.dumps(targets))
           PY
-
   package:
     needs: [build, plan]
     runs-on: macos-latest
@@ -52,17 +55,13 @@ jobs:
         target: ${{ fromJSON(needs.plan.outputs.targets) }}
     steps:
       - uses: actions/checkout@v6
-
       - uses: actions/download-artifact@v8
         with:
-          name: YTKACE-deb-rootless
+          name: YTKACE-deb-${{ matrix.target.deb_variant }}
           path: packages
-
       - uses: levibostian/action-hide-sensitive-inputs@v1
-
       - name: Setup
         run: brew install ldid dpkg
-
       - name: YouTube
         env:
           IPA_URL: ${{ matrix.target.url }}
@@ -80,7 +79,6 @@ jobs:
           if [[ "$file_type" != "application/x-ios-app" && "$file_type" != "application/zip" ]]; then
             exit 1
           fi
-
       - name: Inject
         id: inject
         run: |
@@ -91,7 +89,6 @@ jobs:
           youtube_version="$(python3 - <<'PY'
           import plistlib
           import zipfile
-
           with zipfile.ZipFile('YouTube.ipa') as archive:
               info = next(name for name in archive.namelist()
                           if name.startswith('Payload/') and name.endswith('.app/Info.plist'))
@@ -99,16 +96,16 @@ jobs:
           PY
           )"
           if [ "${{ matrix.target.label }}" = "ios16" ]; then
-            output="YTKACE_${tweak_version}_YouTube_iOS16_${youtube_version}.ipa"
+            output="YTKACE_${tweak_version}_YouTube_iOS16_${youtube_version}_${{ matrix.target.deb_variant }}.ipa"
           else
-            output="YTKACE_${tweak_version}_YouTube_${youtube_version}.ipa"
+            output="YTKACE_${tweak_version}_YouTube_${youtube_version}_${{ matrix.target.deb_variant }}.ipa"
           fi
           bash Scripts/sideload-repack.sh YouTube.ipa deb-root/var/jb/Library/MobileSubstrate/DynamicLibraries/YTKACE.dylib "$output"
           bash Tools/verify-artifacts.sh deb-root/var/jb/Library/MobileSubstrate/DynamicLibraries/YTKACE.dylib "$output"
           echo "ipa=$output" >> "$GITHUB_OUTPUT"
-
       - uses: actions/upload-artifact@v7
         with:
-          name: YTKACE-IPA-${{ matrix.target.label }}
+          name: YTKACE-IPA-${{ matrix.target.label }}-${{ matrix.target.deb_variant }}
           path: ${{ steps.inject.outputs.ipa }}
           if-no-files-found: error
+          overwrite: true
