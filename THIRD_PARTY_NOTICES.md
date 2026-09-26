@@ -16,9 +16,17 @@ The download path implements YouTube's SABR streaming protocol. It was written f
 
 ## YTPlaybackFix
 
-The playback error recovery in `Tweak/Features/Playback/PlaybackFixHooks.mm` is adapted from [YTPlaybackFix](https://github.com/Mark02-2012/YTPlaybackFix) by Mark02, used under the MIT licence. It is his `Refresh.xm` method: intercept `handleError:` for playback error codes 14 and 0, send a `YTPlayerTapToRetryResponderEvent`, seek back to the last known position, and re-check after a second. The control flow and timings are his. The port off Logos to the runtime hooking used elsewhere here, the preference gate, and the logging are the only changes. The full licence text is reproduced in the header of that file.
+The playback error recovery in `Tweak/Features/Playback/PlaybackFixHooks.mm` is adapted from [YTPlaybackFix](https://github.com/Mark02-2012/YTPlaybackFix) by Mark02, used under the MIT licence. It is his `Refresh.xm` method: intercept `handleError:` for playback error codes 14 and 0, send a `YTPlayerTapToRetryResponderEvent`, seek back to the last known position, and re-check after a second. The overall control flow is his. Changes here: the port off Logos to the runtime hooking used elsewhere, the preference gate and the logging; recovery now reloads only the player through `player:reloadWithContext:`, falling back to his retry event when that is unavailable, since the retry event reloads the whole watch page; the re-check waits three seconds instead of one, so a reload still in progress is not retried a second time; and the replay step was dropped because the selector no longer exists. The full licence text is reproduced in the header of that file.
 
 MIT License, Copyright (c) 2026 Mark02.
+
+## yt-dlp EJS challenge solver
+
+`Resources/YTKACE.bundle/ejs/yt.solver.core.min.js` and `yt.solver.lib.min.js` are the JavaScript challenge solver from [yt-dlp/ejs](https://github.com/yt-dlp/ejs), release 0.8.0, used unmodified by `Tweak/Features/Playback/ChallengeSolver.mm` to compute the `n` parameter of TV client stream URLs from YouTube's player script. The solver is released under the Unlicense. The library bundle includes [meriyah](https://github.com/meriyah/meriyah) (ISC License, Copyright (c) 2019 and later, KFlash and others) and [astring](https://github.com/davidbonnet/astring) (MIT License, Copyright (c) 2015, David Bonnet); their licence texts are reproduced in the header of that file.
+
+## TV client identifiers
+
+`Tweak/Features/Streaming/TVClient.mm` requests streams as YouTube's TV client. The client name, version, device fields and user agent it sends, and the order of requests (a visitor ID from `/guide`, then `/player` with the player's signature timestamp), follow the values and approach published by the [Morphe](https://github.com/MorpheApp/morphe-patches) project. No Morphe code is used.
 
 ## Apple frameworks
 

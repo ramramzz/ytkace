@@ -18,7 +18,9 @@ void YTKACEInstallPromoHooks(void);
 void YTKACEInstallSponsorBlockHooks(void);
 void YTKACEInstallDownloadHooks(void);
 void YTKACEInstallQueueHooks(void);
+void YTKACEQueuePrepareMenuRenderers(id _Nullable renderers);
 BOOL YTKACEQueueHasItems(void);
+BOOL YTKACEQueueOwnsCurrentVideo(void);
 NSString * _Nullable YTKACELastVideoID(void);
 void YTKACEInstallGlobalDownloadMiniPlayer(void);
 void YTKACEInstallOLEDHooks(void);
@@ -49,12 +51,17 @@ void YTKACECaptionsRestore(id player);
 void YTKACEApplyPreferredCaptionLanguage(id player);
 void YTKACEInstallSleepTimerHooks(void);
 void YTKACEInstallDoubleTapHooks(void);
+void YTKACEInstallVideoZoomHooks(void);
+void YTKACEPauseYouTubePlayer(void);
 void YTKACEConfigureTapToSeek(UIView *view);
 void YTKACEInstallShortsLimitHooks(void);
 void YTKACEInstallShortsStartupHooks(void);
 void YTKACEInstallShortsPinchHooks(void);
+void YTKACEInstallShortsPiPHooks(void);
 void YTKACESetShortsOverlayFullscreen(UIView *overlay, BOOL fullscreen);
 BOOL YTKACEShortsLimitReached(void);
+BOOL YTKACEPlayerIsShorts(id player);
+NSInteger YTKACERealUserInterfaceIdiom(void);
 void YTKACEInstallProgressBarHooks(void);
 void YTKACEApplyProgressStyleToBar(UIView *bar);
 void YTKACEStyleProgressLayer(CALayer *layer, CGFloat trackWidth);
@@ -88,3 +95,11 @@ void YTKACEScheduleFirstLaunch(void);
 
 NS_ASSUME_NONNULL_END
 void YTKACEInstallPlaybackFixHooks(void);
+NSDictionary<NSString *, NSString *> * _Nullable YTKACESolveChallenges(NSString * _Nullable playerID,
+    NSString * _Nullable playerJS, NSString * _Nonnull type, NSArray<NSString *> * _Nonnull challenges);
+NSData * _Nonnull YTKACETVClientInfo(void);
+NSDictionary<NSString *, NSString *> * _Nonnull YTKACETVHeaders(NSString * _Nullable visitor);
+void YTKACETVFetchPlayerResponse(NSString * _Nonnull videoID,
+    void (^ _Nonnull completion)(id _Nullable response, NSString * _Nullable visitor, NSError * _Nullable error));
+NSString * _Nonnull YTKACESolveURLParameterN(NSString * _Nullable playerID, NSString * _Nullable playerJS,
+    NSString * _Nonnull URLString);
