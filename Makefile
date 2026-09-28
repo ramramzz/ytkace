@@ -64,6 +64,9 @@ YTKACE_FILES = \
 	Tweak/Features/Compatibility/CastCompatibility.mm \
 	Tweak/Features/Onboarding/FirstLaunch.mm \
 	Tweak/Features/Navigation/TabBarHooks.mm \
+	Tweak/Features/Navigation/GlassChrome.mm \
+	Tweak/Features/Navigation/GlassSheets.mm \
+	Tweak/Features/Playback/PlayerGlass.mm \
 	Tweak/Features/Navigation/NavigationBehaviorHooks.mm \
 	Tweak/Features/Gestures/PlayerGestures.mm \
 	Tweak/Features/Interface/OverlayVisibilityHooks.mm \
