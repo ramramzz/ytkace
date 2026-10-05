@@ -8,9 +8,10 @@ An open-source YouTube enhancement for iOS.
 |---|---|
 | Downloads | Video, audio, Shorts and whole-playlist downloads; save to the library, Photos or the share sheet; sorting; backup and restore |
 | Queue | Play next or play last without Premium, with reorder, swipe to remove, shuffle, loop and clear |
-| Playback | Background playback, PiP, loop, speed controls, default speed, gestures and tap to seek |
+| Playback | Background playback, PiP, loop, speed controls, default speed, gestures, tap to seek and an HLS playback mode |
 | SponsorBlock | Category controls, progress markers, skip modes and configurable alerts |
 | Interface | OLED mode, overlay controls, navigation cleanup and native share sheets |
+| Liquid Glass | Glass tab bar, top bar buttons, menus, sheets, player buttons and YTKACE popups on iOS 26, with shrink on scroll and a selected tab color |
 | Tabs | Hide, reorder and add YouTube destinations |
 | Library | Downloaded video, Shorts and audio players with resume support |
 | Settings | Searchable settings, 15 languages and a native YouTube settings section |
@@ -19,16 +20,16 @@ An open-source YouTube enhancement for iOS.
 
 - **iOS:** 15.0 and newer (tweak packages); the prebuilt IPAs follow their YouTube base
 - **Architecture:** arm64
-- **YTKACE:** 1.0.1
+- **YTKACE:** 1.1.2
 
-YouTube 21.38.2 requires iOS 17, so two IPAs are published:
+YouTube 21.40.5 requires iOS 17, so two IPAs are published:
 
 | IPA | YouTube base | iOS |
 | --- | --- | --- |
-| `YTKACE_1.0.1_YouTube_iOS16_21.33.6.ipa` | 21.33.6 | 16.0 and newer |
-| `YTKACE_1.0.1_YouTube_21.38.2.ipa` | 21.38.2 | 17.0 and newer |
+| `YTKACE_1.1.2_YouTube_iOS16_21.33.6.ipa` | 21.33.6 | 16.0 and newer |
+| `YTKACE_1.1.2_YouTube_21.40.5.ipa` | 21.40.5 | 17.0 and newer |
 
-Pick the 21.38.2 build unless you are on iOS 16. Either one installs with TrollStore or a developer-certificate sideloader.
+Pick the 21.40.5 build unless you are on iOS 16. Either one installs with TrollStore or a developer-certificate sideloader.
 
 ## Install
 
@@ -47,7 +48,7 @@ Rootless and roothide packages are both published. The repository page also has 
 
 Fork the repository, enable Actions, open the **IPA** workflow and provide a direct link to a decrypted YouTube IPA you are legally allowed to use. The completed workflow provides the injected IPA as an artifact. The **Deb** workflow builds the tweak package.
 
-To build both IPAs in one run, fill in the second URL field as well: the workflow takes an iOS 16 base (21.33.6) and an optional iOS 17+ base (21.38.2), and uploads them as separate artifacts. Leaving the second field empty builds a single IPA.
+To build both IPAs in one run, fill in the second URL field as well: the workflow takes an iOS 16 base (21.33.6) and an optional iOS 17+ base (21.40.5), and uploads them as separate artifacts. Leaving the second field empty builds a single IPA.
 
 ## Settings
 
@@ -66,6 +67,16 @@ Both pages carry the same options, and the YouTube Settings section has a search
   <sub>Settings · Downloads · Audio Player</sub>
 </p>
 
+<p align="center">
+  <img src="screenshots/framed/glass-menu.png" width="220" alt="Liquid Glass menu">
+  <img src="screenshots/framed/glass-quality-sheet.png" width="220" alt="Liquid Glass quality sheet">
+  <img src="screenshots/framed/glass-download.png" width="220" alt="Liquid Glass download progress">
+</p>
+
+<p align="center">
+  <sub>Liquid Glass · Menus · Sheets · Tab Bar</sub>
+</p>
+
 <details>
   <summary>More screenshots</summary>
   <br>
@@ -82,6 +93,11 @@ Both pages carry the same options, and the YouTube Settings section has a search
   <p align="center">
     <img src="screenshots/framed/sponsorblock-settings.png" width="190" alt="SponsorBlock settings">
     <img src="screenshots/framed/audio-queue.png" width="190" alt="Audio queue">
+  </p>
+  <p align="center">
+    <img src="screenshots/framed/glass-settings.png" width="190" alt="Liquid Glass settings">
+    <img src="screenshots/framed/glass-share-sheet.png" width="190" alt="Liquid Glass share sheet">
+    <img src="screenshots/framed/glass-home.png" width="190" alt="Liquid Glass tab bar">
   </p>
 </details>
 

@@ -55,6 +55,10 @@ YTKACE_FILES = \
 	Tweak/Features/Playback/ProgressBarStyle.mm \
 	Tweak/Features/Streaming/StreamingHooks.mm \
 	Tweak/Features/Streaming/TVClient.mm \
+	Tweak/Features/Streaming/HLSPlayback.mm \
+	Tweak/Features/Interface/HomeTabs.mm \
+	Tweak/UI/ExtraDim.mm \
+	Tweak/Features/Playback/RemoteSkip.mm \
 	Tweak/Features/Shorts/ShortsHooks.mm \
 	Tweak/Features/Shorts/ShortsSessionLimit.mm \
 	Tweak/Features/Shorts/ShortsStartup.mm \
