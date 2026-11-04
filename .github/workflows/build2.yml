@@ -1,0 +1,618 @@
+name: Rootless IPA + Tweaks
+
+# Paste a direct link to a decrypted YouTube IPA and run the workflow.
+#
+#   Job 1 (ubuntu)  builds YTKACE rootless and injects it  -> YTKACE_<ver>_YouTube_<ytver>.ipa
+#   Job 2 (macOS)   builds the extra tweaks you tick, injects them with cyan on top of
+#                   the IPA from job 1                       -> ..._tweaks.ipa
+#
+# Job 1's IPA is always uploaded, so if job 2 fails you still have a plain YTKACE IPA.
+# Untick "extras" (or every tweak) to skip job 2.
+#
+# Overlap with YTKACE (checked against its source): YouPiP and youtube-native-share hook the
+# exact same PiP / share-sheet methods YTKACE already hooks, so they default to off.
+# Everything else is additive or chains cleanly.
+#
+# Drop this file at .github/workflows/build-rootless-ipa.yml (default branch).
+
+on:
+  workflow_dispatch:
+    inputs:
+      ipa_url:
+        description: Direct link to a decrypted YouTube IPA (Dropbox, GitHub release asset API URL, any direct download)
+        required: true
+        type: string
+      extras:
+        description: "Inject the extra tweaks below (untick for a plain YTKACE IPA)"
+        default: true
+        required: false
+        type: boolean
+      youpip:
+        description: "Integrate YouPiP (YTKACE already has PiP; both hook the same methods)"
+        default: false
+        required: false
+        type: boolean
+      ytshare:
+        description: "Integrate youtube-native-share (YTKACE already replaces the share sheet)"
+        default: false
+        required: false
+        type: boolean
+      ytuhd:
+        description: "Integrate YTUHD"
+        default: true
+        required: false
+        type: boolean
+      ryd:
+        description: "Integrate Return-YouTube-Dislikes"
+        default: true
+        required: false
+        type: boolean
+      abconfig:
+        description: "Integrate YTABConfig"
+        default: true
+        required: false
+        type: boolean
+      youquality:
+        description: "Integrate YouQuality"
+        default: false
+        required: false
+        type: boolean
+      demc:
+        description: "Integrate DontEatMyContent"
+        default: true
+        required: false
+        type: boolean
+      ytweaks:
+        description: "Integrate YTweaks"
+        default: true
+        required: false
+        type: boolean
+      youslider:
+        description: "Integrate YouSlider"
+        default: true
+        required: false
+        type: boolean
+      gonerino:
+        description: "Integrate Gonerino (partly overlaps YTKACE's AiSList blocklist)"
+        default: true
+        required: false
+        type: boolean
+      volboost:
+        description: "Integrate VolumeBoostYT (Require iOS 16+)"
+        default: true
+        required: false
+        type: boolean
+      uncapped:
+        description: "Integrate UncappedAVPlayer (keeps normal playback above 2x speed)"
+        default: true
+        required: false
+        type: boolean
+      safari_ext:
+        description: "Add the Open in YouTube Safari extension (turn it on in Settings > Safari > Extensions)"
+        default: true
+        required: false
+        type: boolean
+      display_name:
+        description: "App name (optional, leave empty to keep YouTube)"
+        default: ""
+        required: false
+        type: string
+      bundle_id:
+        description: "Bundle ID (optional, leave empty to keep com.google.ios.youtube)"
+        default: ""
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  ytkace:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      ipa: ${{ steps.inject.outputs.ipa }}
+      youtube_version: ${{ steps.check.outputs.youtube_version }}
+      run_extras: ${{ steps.plan.outputs.run_extras }}
+    env:
+      # Same layout and cache key as the repo's own Deb workflow, so both share
+      # one cached Theos + toolchain + SDK.
+      THEOS: ${{ github.workspace }}/.theos
+      CI: true
+    steps:
+      - uses: actions/checkout@v6
+
+      # Decide up front whether job 2 will run.
+      - name: Plan
+        id: plan
+        env:
+          EXTRAS: ${{ inputs.extras }}
+          TOGGLES: "${{ inputs.youpip }} ${{ inputs.ytshare }} ${{ inputs.ytuhd }} ${{ inputs.ryd }} ${{ inputs.abconfig }} ${{ inputs.youquality }} ${{ inputs.demc }} ${{ inputs.ytweaks }} ${{ inputs.youslider }} ${{ inputs.gonerino }} ${{ inputs.volboost }} ${{ inputs.uncapped }} ${{ inputs.safari_ext }}"
+        run: |
+          run=false
+          if [ "$EXTRAS" = "true" ]; then
+            for toggle in $TOGGLES; do
+              if [ "$toggle" = "true" ]; then run=true; fi
+            done
+          fi
+          echo "extra tweaks job: $run"
+          echo "run_extras=$run" >> "$GITHUB_OUTPUT"
+
+      # Download and sanity-check the IPA first, so a bad link fails in seconds
+      # instead of after a full build.
+      - name: Download YouTube IPA
+        env:
+          IPA_URL: ${{ inputs.ipa_url }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "::add-mask::$IPA_URL"
+          url="$(python3 -I - <<'PY'
+          import os
+          import urllib.parse as parse
+
+          url = os.environ["IPA_URL"].strip()
+          parts = parse.urlsplit(url)
+          if parts.scheme not in ("http", "https"):
+              raise SystemExit("The IPA link must start with http:// or https://")
+          host = parts.hostname or ""
+          if host == "dropbox.com" or host.endswith(".dropbox.com"):
+              # Dropbox share links serve a preview page unless dl=1.
+              query = [(k, v) for k, v in parse.parse_qsl(parts.query, keep_blank_values=True) if k != "dl"]
+              query.append(("dl", "1"))
+              parts = parts._replace(query=parse.urlencode(query))
+          print(parse.urlunsplit(parts))
+          PY
+          )"
+          echo "::add-mask::$url"
+          if [[ "$url" == "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/assets/"* ]]; then
+            # Private release asset in this repo.
+            curl --fail --location --silent --show-error \
+              --header "Accept: application/octet-stream" \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              "$url" --output YouTube.ipa
+          else
+            curl --fail --location --silent --show-error "$url" --output YouTube.ipa
+          fi
+          ls -l YouTube.ipa
+
+      - name: Check IPA
+        id: check
+        run: |
+          python3 -I - <<'PY'
+          import os
+          import plistlib
+          import struct
+          import sys
+          import zipfile
+
+          sys.path.insert(0, "Tools")
+          import macho_inject as macho
+
+          LC_ENCRYPTION_INFO = 0x21
+          LC_ENCRYPTION_INFO_64 = 0x2C
+
+
+          def fail(message):
+              print(f"::error::{message}")
+              raise SystemExit(1)
+
+
+          if not zipfile.is_zipfile("YouTube.ipa"):
+              fail("The download is not an IPA (zip). Use a direct download link, not a preview page, and check it has not expired.")
+
+          with zipfile.ZipFile("YouTube.ipa") as archive:
+              apps = sorted({
+                  name.split("/")[1]
+                  for name in archive.namelist()
+                  if name.startswith("Payload/") and name.count("/") >= 2
+                  and name.split("/")[1].endswith(".app")
+              })
+              if len(apps) != 1:
+                  fail(f"Expected exactly one .app inside Payload/, found {len(apps)}.")
+              root = f"Payload/{apps[0]}"
+              info = plistlib.loads(archive.read(f"{root}/Info.plist"))
+              bundle_id = info.get("CFBundleIdentifier")
+              if bundle_id != "com.google.ios.youtube":
+                  fail(f"Bundle id is {bundle_id!r}, expected 'com.google.ios.youtube'. This is not the YouTube app.")
+              binary = archive.read(f"{root}/{info['CFBundleExecutable']}")
+
+          try:
+              for item in macho.slices(binary):
+                  for command in macho.commands(binary, item):
+                      if command.command in (LC_ENCRYPTION_INFO, LC_ENCRYPTION_INFO_64):
+                          if struct.unpack_from("<I", binary, command.offset + 16)[0] != 0:
+                              fail("This IPA is still App Store encrypted (cryptid=1). Use a decrypted IPA.")
+          except macho.MachOError as error:
+              fail(f"Cannot read the YouTube executable: {error}")
+
+          version = info["CFBundleShortVersionString"]
+          min_os = info.get("MinimumOSVersion", "unknown")
+          print(f"YouTube {version}, minimum iOS {min_os}, decrypted")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"youtube_version={version}\n")
+              out.write(f"min_os={min_os}\n")
+          PY
+
+      - name: Cache Theos
+        id: cache-theos
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.theos
+          key: roothide-theos-${{ runner.os }}-ubuntu2404-v2
+
+      - name: Install Theos
+        if: steps.cache-theos.outputs.cache-hit != 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash -c "$(curl -fsSL https://raw.githubusercontent.com/roothide/theos/master/bin/install-theos)"
+
+      - name: Build YTKACE (rootless)
+        run: |
+          make clean all FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless DISABLE_ROOTLESS_COMPAT_WARNING=1
+          test -f dist/YTKACE.dylib
+          "$THEOS/toolchain/linux/iphone/bin/lipo" -info dist/YTKACE.dylib
+
+      - name: Inject YTKACE
+        id: inject
+        env:
+          YOUTUBE_VERSION: ${{ steps.check.outputs.youtube_version }}
+          MIN_OS: ${{ steps.check.outputs.min_os }}
+        run: |
+          toolchain="$THEOS/toolchain/linux/iphone/bin"
+          export LDID="$toolchain/ldid"
+          # lipo/otool come from the Theos toolchain; without them the repo's
+          # verifier silently skips its architecture and dependency checks.
+          export PATH="$PATH:$toolchain"
+
+          tweak_version="$(awk '/^Version:/ {print $2}' control)"
+          output="YTKACE_${tweak_version}_YouTube_${YOUTUBE_VERSION}.ipa"
+
+          bash Scripts/sideload-repack.sh YouTube.ipa dist/YTKACE.dylib "$output"
+          bash Tools/verify-artifacts.sh dist/YTKACE.dylib "$output"
+
+          unzip -tq "$output"
+          # Capture the listing first: "unzip | grep -q" dies with SIGPIPE (141)
+          # under pipefail on large IPAs.
+          listing="$(unzip -Z1 "$output")"
+          grep -q '\.app/YTKACE\.bundle/Info\.plist$' <<< "$listing"
+          grep -q '\.app/Frameworks/YTKACE\.dylib$' <<< "$listing"
+
+          {
+            echo "### YTKACE IPA"
+            echo "- File: \`$output\`"
+            echo "- YTKACE $tweak_version on YouTube $YOUTUBE_VERSION (minimum iOS $MIN_OS)"
+            echo "- SHA-256: \`$(sha256sum "$output" | cut -d' ' -f1)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "ipa=$output" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.inject.outputs.ipa }}
+          path: ${{ steps.inject.outputs.ipa }}
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
+
+  extras:
+    name: Extra tweaks
+    needs: ytkace
+    if: needs.ytkace.outputs.run_extras == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 120
+    env:
+      THEOS: ${{ github.workspace }}/theos
+      BASE_IPA: ${{ needs.ytkace.outputs.ipa }}
+      YOUPIP: ${{ inputs.youpip }}
+      YTSHARE: ${{ inputs.ytshare }}
+      YTUHD: ${{ inputs.ytuhd }}
+      RYD: ${{ inputs.ryd }}
+      ABCONFIG: ${{ inputs.abconfig }}
+      YOUQUALITY: ${{ inputs.youquality }}
+      DEMC: ${{ inputs.demc }}
+      YTWEAKS: ${{ inputs.ytweaks }}
+      YOUSLIDER: ${{ inputs.youslider }}
+      GONERINO: ${{ inputs.gonerino }}
+      VOLBOOST: ${{ inputs.volboost }}
+      UNCAPPED: ${{ inputs.uncapped }}
+      SAFARI_EXT: ${{ inputs.safari_ext }}
+      # cyan v1.4.4 (the commit this workflow was checked against). To update, replace the SHA.
+      CYAN_COMMIT: 740d3716dcd98c20c000f12cdb88f1f0b2a533a4
+      # Alderis (needed by YouSlider) comes from this repo; the hash is the file that was checked.
+      ALDERIS_URL: https://github.com/Tonwalter888/Tonwalter888.github.io/raw/refs/heads/main/debs/alderis.deb
+      ALDERIS_SHA256: 52963a8ea5294c0db34bc383cd60a50f65ce0196b52ecb035548550f1370f334
+      # The Safari extension is a prebuilt binary too; this is the commit that was checked.
+      APPEX_REPO: https://github.com/BillyCurtis/OpenYouTubeSafariExtension.git
+      APPEX_COMMIT: c87b5d5551b406477dca883158572f803251f52c
+    steps:
+      # Only Tools/ is needed (for the final check).
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: Tools
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ env.BASE_IPA }}
+          path: base
+
+      - name: Install dependencies
+        run: |
+          brew install make ldid
+          if [ "$GONERINO" = "true" ]; then brew install go; fi
+          if [ "$YTUHD" = "true" ]; then brew install meson ninja; fi
+          echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
+
+      # Same Theos setup as the YouMod workflow.
+      - name: Get Theos commit
+        run: |
+          echo "THEOS_COMMIT=$(git ls-remote https://github.com/roothide/theos HEAD | awk '{print substr($1,1,7)}')" >> "$GITHUB_ENV"
+
+      - name: Cache Theos
+        id: cache-theos
+        uses: actions/cache@v6
+        with:
+          path: theos
+          key: 26.5-SDK-${{ env.THEOS_COMMIT }}
+
+      - name: Setup Theos
+        if: ${{ steps.cache-theos.outputs.cache-hit != 'true' }}
+        run: |
+          git clone --quiet --depth=1 --recurse-submodules https://github.com/roothide/theos.git
+          git clone --quiet --depth=1 -n --filter=tree:0 https://github.com/Tonwalter888/iOS-SDKs.git
+          cd iOS-SDKs
+          git sparse-checkout set --no-cone iPhoneOS26.5.sdk
+          git checkout --quiet
+          mv *.sdk "$THEOS/sdks"
+          cd "$GITHUB_WORKSPACE/theos/vendor/logos"
+          git checkout a623700
+
+      - name: Clone headers
+        run: |
+          if [ ! -d "$THEOS/include/YouTubeHeader" ]; then
+            git clone --quiet --depth=1 https://github.com/PoomSmart/YouTubeHeader.git "$THEOS/include/YouTubeHeader"
+          else
+            git -C "$THEOS/include/YouTubeHeader" pull --quiet --force
+          fi
+          if [ "$DEMC" = "true" ]; then
+            rm -fr "$THEOS/include/YTHeaders"
+            cp -r "$THEOS/include/YouTubeHeader" "$THEOS/include/YTHeaders"
+          fi
+          if [ ! -d "$THEOS/include/PSHeader" ]; then
+            git clone --quiet --depth=1 https://github.com/PoomSmart/PSHeader.git "$THEOS/include/PSHeader"
+          else
+            git -C "$THEOS/include/PSHeader" pull --quiet --force
+          fi
+
+      - name: Fix Theos od broken pipe issue
+        run: sed -i '' 's/od -c "$i" | head/od -c "$i" 2>\/dev\/null | head/g' "$THEOS/bin/convert_xml_plist.sh" || true
+
+      - name: Install cyan
+        run: pipx install "https://github.com/asdfzxcvbn/pyzule-rw/archive/${CYAN_COMMIT}.zip"
+
+      - name: Build tweaks
+        run: |
+          set -eo pipefail
+          mkdir -p src debs
+          want() { [ "$1" = "true" ]; }
+
+          # build <dir> <git url> <deb name> [extra make args...]
+          # Set CLONE_FLAGS=... in front of the call to change how it is cloned.
+          # A directory that already exists in src/ is built as it is.
+          build() {
+            dir="$1"; url="$2"; deb="$3"; shift 3
+            echo "::group::Build $dir"
+            if [ ! -d "src/$dir" ]; then
+              git clone --quiet --depth=1 $CLONE_FLAGS "$url" "src/$dir"
+            fi
+            (cd "src/$dir" && make clean package DEBUG=0 FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless "$@")
+            mv "src/$dir"/packages/*.deb "debs/$deb.deb"
+            echo "::endgroup::"
+          }
+
+          P=https://github.com/PoomSmart
+
+          # Helpers that other tweaks expect.
+          if want "$YOUPIP" || want "$YTUHD" || want "$YOUQUALITY"; then
+            build YTVideoOverlay "$P/YTVideoOverlay.git" ytvo
+          fi
+          if want "$YOUPIP" || want "$YTUHD" || want "$RYD" || want "$ABCONFIG" || want "$YOUQUALITY" \
+             || want "$DEMC" || want "$YTWEAKS" || want "$YOUSLIDER" || want "$GONERINO" \
+             || want "$YTSHARE" || want "$VOLBOOST"; then
+            build YouGroupSettings "$P/YouGroupSettings.git" ygs
+          fi
+
+          if want "$YOUPIP"; then build YouPiP "$P/YouPiP.git" youpip; fi
+          if want "$RYD"; then build Return-YouTube-Dislikes "$P/Return-YouTube-Dislikes.git" ryd; fi
+          if want "$ABCONFIG"; then build YTABConfig "$P/YTABConfig.git" ytabconfig; fi
+          if want "$YOUQUALITY"; then build YouQuality "$P/YouQuality.git" youquality; fi
+          if want "$UNCAPPED"; then build UncappedAVPlayer "$P/UncappedAVPlayer.git" uncapavplayer ARCHS=arm64; fi
+          # DEMC defines a global in a header that two files include; that only links with -fcommon.
+          if want "$DEMC"; then
+            build DontEatMyContent https://github.com/therealFoxster/DontEatMyContent.git demc ADDITIONAL_CFLAGS=-fcommon
+          fi
+          if want "$YTWEAKS"; then build YTweaks https://github.com/fosterbarnes/YTweaks.git ytweaks; fi
+          if want "$GONERINO"; then build Gonerino https://github.com/castdrian/Gonerino.git gonerino; fi
+          if want "$VOLBOOST"; then
+            build VolumeBoostYT https://github.com/VasirakCalgux/VolumeBoostYT.git volboostyt ARCHS=arm64
+          fi
+
+          if want "$YTUHD"; then
+            git clone --quiet --depth=1 --recurse-submodules "$P/YTUHD.git" src/YTUHD
+            (cd src/YTUHD && make libvpx dav1d)
+            build YTUHD "$P/YTUHD.git" ytuhd SIDELOAD=1
+          fi
+
+          if want "$YTSHARE"; then
+            git clone --quiet --depth=1 https://github.com/jkhsjdhjs/youtube-native-share.git src/youtube-native-share
+            git clone --quiet --depth=1 https://github.com/protocolbuffers/protobuf.git src/youtube-native-share/protobuf
+            build youtube-native-share https://github.com/jkhsjdhjs/youtube-native-share.git ytnativeshare ARCHS=arm64
+          fi
+
+          if want "$YOUSLIDER"; then
+            build YouSlider "$P/YouSlider.git" youslider
+            curl --fail --location --silent --show-error "$ALDERIS_URL" --output debs/alderis.deb
+            python3 -I - debs/alderis.deb "$ALDERIS_SHA256" <<'PY'
+          import hashlib
+          import sys
+
+          actual = hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest()
+          if actual != sys.argv[2]:
+              print(f"::error::alderis.deb changed upstream (sha256 {actual}). Check it, then update ALDERIS_SHA256 in this workflow.")
+              raise SystemExit(1)
+          print("alderis.deb matches the checked hash")
+          PY
+          fi
+
+          ls -l debs
+
+      - name: Inject tweaks
+        id: inject
+        env:
+          DISPLAY_NAME: ${{ inputs.display_name }}
+          BUNDLE_ID: ${{ inputs.bundle_id }}
+        run: |
+          set -eo pipefail
+          want() { [ "$1" = "true" ]; }
+
+          base="$PWD/base/$BASE_IPA"
+          output_name="${BASE_IPA%.ipa}_tweaks.ipa"
+          mkdir -p out
+          output="$PWD/out/$output_name"
+
+          # -u drop UISupportedDevices, -w drop watch app, -e drop every app extension
+          # (each one costs a free-account App ID), -f inject the files that follow.
+          set -- -i "$base" -o "$output" --overwrite -uwef
+          for deb in debs/*.deb; do
+            if [ -e "$deb" ]; then set -- "$@" "$PWD/$deb"; fi
+          done
+          if want "$SAFARI_EXT"; then
+            git clone --quiet --depth=1 "$APPEX_REPO" ext
+            if [ "$(git -C ext rev-parse HEAD)" != "$APPEX_COMMIT" ]; then
+              echo "::error::The Safari extension repo has a new commit. Check it, then update APPEX_COMMIT in this workflow."
+              exit 1
+            fi
+            set -- "$@" "$PWD/ext/OpenYouTubeSafariExtension.appex"
+          fi
+          if [ -n "$DISPLAY_NAME" ]; then set -- "$@" -n "$DISPLAY_NAME"; fi
+          if [ -n "$BUNDLE_ID" ]; then set -- "$@" -b "$BUNDLE_ID"; fi
+
+          cyan "$@"
+          test -f "$output"
+          # cyan leaves a copy of the main binary's entitlements in the app root; drop it.
+          zip -q -d "$output" 'Payload/*.app/cyan.entitlements' || true
+          echo "ipa=$output_name" >> "$GITHUB_OUTPUT"
+
+      # The second pass must not have broken the first: YTKACE still loaded, every injected
+      # dylib loaded, nothing left depending on a framework that is not in the app.
+      - name: Check result
+        run: |
+          python3 -I - "base/$BASE_IPA" "out/${BASE_IPA%.ipa}_tweaks.ipa" <<'PY'
+          import os
+          import pathlib
+          import plistlib
+          import sys
+          import tempfile
+          import zipfile
+
+          sys.path.insert(0, "Tools")
+          import list_macho
+          import macho_inject as macho
+
+          WEAK = 0x18 | 0x80000000
+
+
+          def fail(message):
+              print(f"::error::{message}")
+              raise SystemExit(1)
+
+
+          def unpack(ipa, destination):
+              with zipfile.ZipFile(ipa) as archive:
+                  archive.extractall(destination)
+              apps = sorted(pathlib.Path(destination, "Payload").glob("*.app"))
+              if len(apps) != 1:
+                  fail(f"{ipa}: expected one .app, found {len(apps)}")
+              return apps[0]
+
+
+          def files(app):
+              return {p.relative_to(app).as_posix() for p in app.rglob("*") if p.is_file()}
+
+
+          def dependencies(path):
+              data = path.read_bytes()
+              found = []
+              for item in macho.slices(data):
+                  for command in macho.commands(data, item):
+                      name = macho.dylib_name(data, command)
+                      if name is not None:
+                          found.append((name, command.command == WEAK))
+              return found
+
+
+          with tempfile.TemporaryDirectory() as before, tempfile.TemporaryDirectory() as after:
+              old = unpack(sys.argv[1], before)
+              app = unpack(sys.argv[2], after)
+              info = plistlib.loads((app / "Info.plist").read_bytes())
+              main = app / info["CFBundleExecutable"]
+              loads = {name for name, _ in dependencies(main)}
+
+              if "@rpath/YTKACE.dylib" not in loads:
+                  fail("YTKACE's load command is gone from the main binary")
+              if not (app / "Frameworks/YTKACE.dylib").is_file() or not (app / "YTKACE.bundle/Info.plist").is_file():
+                  fail("YTKACE.dylib or YTKACE.bundle is missing from the app")
+
+              if (app / "Extensions").exists():
+                  fail("Extensions/ should have been removed")
+              if (app / "cyan.entitlements").exists():
+                  fail("cyan.entitlements should have been removed from the app")
+              expected = {"OpenYouTubeSafariExtension.appex"} if os.environ["SAFARI_EXT"] == "true" else set()
+              plugins = {p.name for p in (app / "PlugIns").glob("*.appex")} if (app / "PlugIns").is_dir() else set()
+              if plugins != expected:
+                  fail(f"PlugIns holds {sorted(plugins)}, expected {sorted(expected)}")
+
+              added = sorted(files(app) - files(old))
+              new_binaries = [app / p for p in added
+                              if not (app / p).is_symlink() and list_macho.is_macho(app / p)]
+              new_dylibs = [p for p in added if p.startswith("Frameworks/") and p.count("/") == 1 and p.endswith(".dylib")]
+              missing = [p for p in new_dylibs if "@rpath/" + p.split("/")[1] not in loads]
+              if missing:
+                  fail(f"injected but not loaded by the main binary: {missing}")
+
+              problems = 0
+              for binary in new_binaries:
+                  for name, weak in dependencies(binary):
+                      if not name.startswith("@rpath/"):
+                          continue
+                      rest = name[len("@rpath/"):]
+                      if rest.startswith("libswift"):
+                          continue  # Swift runtime: iOS provides it from /usr/lib/swift
+                      if (app / "Frameworks" / rest).is_file() or (app / rest).is_file():
+                          continue
+                      level = "warning" if weak else "error"
+                      print(f"::{level}::{binary.relative_to(app)} needs {name}, which is not in the app")
+                      problems += 0 if weak else 1
+              if problems:
+                  raise SystemExit(1)
+
+              print(f"{len(new_dylibs)} injected dylibs loaded, {len(new_binaries)} new binaries checked, YTKACE still loaded")
+              print("PlugIns:", sorted(plugins) or "none")
+          PY
+
+          output="out/${BASE_IPA%.ipa}_tweaks.ipa"
+          unzip -tq "$output"
+          {
+            echo "### YTKACE IPA with extra tweaks"
+            echo "- File: \`$(basename "$output")\`"
+            echo "- Tweaks: \`$(ls debs | sed 's/\.deb$//' | tr '\n' ' ')\`"
+            echo "- Safari extension: $SAFARI_EXT"
+            echo "- SHA-256: \`$(shasum -a 256 "$output" | cut -d' ' -f1)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.inject.outputs.ipa }}
+          path: out/${{ steps.inject.outputs.ipa }}
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
