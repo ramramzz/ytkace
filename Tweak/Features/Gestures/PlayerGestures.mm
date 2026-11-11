@@ -29,6 +29,13 @@ static const void *YTKACESeekIndicatorAssociation = &YTKACESeekIndicatorAssociat
 static const void *YTKACESeekIconAssociation = &YTKACESeekIconAssociation;
 static const void *YTKACESeekLabelAssociation = &YTKACESeekLabelAssociation;
 
+// The screen the player is on. On the iPhone Duo UIScreen.mainScreen is the
+// outer screen even while the app runs unfolded on the inner one, so setting
+// its brightness changed the screen that's off.
+static UIScreen *YTKACEScreenForView(UIView *view) {
+    return view.window.windowScene.screen ?: UIScreen.mainScreen;
+}
+
 @interface YTKACEPriorityPanGestureRecognizer : UIPanGestureRecognizer
 @end
 
@@ -251,7 +258,18 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other 
         if (surface != 1) return NO;
         CGRect activeBounds = view.bounds;
         if (CGRectIsEmpty(activeBounds) || CGRectIsNull(activeBounds)) return NO;
-        if (fabs(velocity.y) <= fabs(velocity.x)) return NO;
+        if (fabs(velocity.y) <= fabs(velocity.x)) {
+            if (!YTKACEFeatureEnabled(@"YTKACE.Preference.Gestures.SwipeToSeek")) return NO;
+            // keep the progress bar's own scrubbing and the miniplayer's drag
+            if (location.y > CGRectGetHeight(activeBounds) * 0.75) return NO;
+            UIWindow *window = view.window;
+            if (window == nil ||
+                CGRectGetWidth([view convertRect:activeBounds toView:window]) <
+                    CGRectGetWidth(window.bounds) * 0.5) return NO;
+            objc_setAssociatedObject(gestureRecognizer, YTKACEGestureActionAssociation,
+                                     @4, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            return YES;
+        }
         double storedArea = [YTKACEPreferenceObject(
             @"YTKACE.Preference.Gestures.ActivationArea") doubleValue];
         double areaPercent = storedArea > 0.0 ? storedArea : 20.0;
@@ -354,16 +372,85 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other 
     [view bringSubviewToFront:indicator];
 }
 
+- (void)showSeekIndicatorInView:(UIView *)view time:(double)time forward:(BOOL)forward {
+    UIView *indicator = [self seekIndicatorInView:view];
+    YTKACEStyleGestureIndicator(indicator, 0.75, 12.0, 28.0);
+    UIImageView *icon = objc_getAssociatedObject(view, YTKACESeekIconAssociation);
+    UILabel *label = objc_getAssociatedObject(view, YTKACESeekLabelAssociation);
+    icon.image = [[UIImage systemImageNamed:forward ? @"goforward" : @"gobackward"]
+        imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    NSInteger seconds = MAX(0, (NSInteger)llround(time));
+    label.text = seconds >= 3600
+        ? [NSString stringWithFormat:@"%ld:%02ld:%02ld", (long)(seconds / 3600),
+              (long)(seconds / 60 % 60), (long)(seconds % 60)]
+        : [NSString stringWithFormat:@"%ld:%02ld", (long)(seconds / 60), (long)(seconds % 60)];
+    indicator.center = CGPointMake(CGRectGetMidX(view.bounds), CGRectGetMidY(view.bounds));
+    [view bringSubviewToFront:indicator];
+    [UIView animateWithDuration:0.2 animations:^{ indicator.alpha = 1.0; }];
+}
+
+- (void)seekTarget:(id)target toTime:(double)time {
+    SEL detailed = NSSelectorFromString(@"didSeekToTime:toleranceBefore:toleranceAfter:");
+    SEL simple = NSSelectorFromString(@"seekToTime:");
+    if ([target respondsToSelector:detailed]) {
+        ((void (*)(id, SEL, double, double, double))objc_msgSend)(target, detailed, time, 0.0, 0.0);
+    } else if ([target respondsToSelector:simple]) {
+        ((void (*)(id, SEL, double))objc_msgSend)(target, simple, time);
+    }
+}
+
+// Swipe left or right across the video; the whole width is 90 seconds.
+- (void)handleSwipeSeek:(UIPanGestureRecognizer *)recognizer {
+    UIView *view = recognizer.view;
+    if (recognizer.state == UIGestureRecognizerStateBegan) {
+        self.seekTarget = [self seekResponderForView:view];
+        self.seekView = view;
+        objc_setAssociatedObject(recognizer, YTKACEGestureInitialAssociation,
+            @([self doubleFromResponder:self.seekTarget
+                              selectors:@[@"currentVideoMediaTime", @"mediaTime"]]),
+            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    id target = self.seekTarget;
+    if (target == nil) return;
+    const double start = [objc_getAssociatedObject(recognizer, YTKACEGestureInitialAssociation) doubleValue];
+    const CGFloat translation = [recognizer translationInView:view].x;
+    double time = start + translation / MAX(200.0, CGRectGetWidth(view.bounds)) * 90.0;
+    const double maximum = [self doubleFromResponder:target selectors:@[
+        @"maximumSeekableTime", @"currentVideoTotalMediaTime", @"currentVideoTotalTime"]];
+    time = MAX([self doubleFromResponder:target selectors:@[@"minimumSeekableTime"]], time);
+    if (maximum > 0.0) time = MIN(maximum - 1.0, time);
+    if (recognizer.state == UIGestureRecognizerStateBegan ||
+        recognizer.state == UIGestureRecognizerStateChanged) {
+        [self showSeekIndicatorInView:view time:time forward:translation >= 0.0];
+        return;
+    }
+    if (recognizer.state == UIGestureRecognizerStateEnded && fabs(time - start) >= 1.0) {
+        [self seekTarget:target toTime:time];
+    }
+    UIView *indicator = [self seekIndicatorInView:view];
+    [UIView animateWithDuration:0.3 delay:0.3
+                        options:UIViewAnimationOptionBeginFromCurrentState
+                     animations:^{ indicator.alpha = 0.0; } completion:nil];
+    self.seekTarget = nil;
+    self.seekView = nil;
+    objc_setAssociatedObject(recognizer, YTKACEGestureActionAssociation, nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
 - (void)handleEdgePan:(UIPanGestureRecognizer *)recognizer {
     UIView *view = recognizer.view;
     NSInteger action = [objc_getAssociatedObject(
         recognizer, YTKACEGestureActionAssociation) integerValue];
+    if (action == 4) {
+        [self handleSwipeSeek:recognizer];
+        return;
+    }
     BOOL volume = action == 2;
     BOOL both = action == 3;
     if (recognizer.state == UIGestureRecognizerStateBegan) {
         double start = volume
             ? AVAudioSession.sharedInstance.outputVolume
-            : UIScreen.mainScreen.brightness;
+            : YTKACEScreenForView(view).brightness;
         objc_setAssociatedObject(recognizer,
                                  YTKACEGestureInitialAssociation,
                                  @(start),
@@ -391,7 +478,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other 
             [slider setValue:(float)value animated:NO];
             [slider sendActionsForControlEvents:UIControlEventValueChanged];
         } else {
-            UIScreen.mainScreen.brightness = value;
+            YTKACEScreenForView(view).brightness = value;
             if (both) {
                 double volumeStart = [objc_getAssociatedObject(
                     recognizer, YTKACEGestureSecondaryInitialAssociation)
@@ -422,7 +509,25 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other 
         objc_setAssociatedObject(
             recognizer, YTKACEGestureSecondaryInitialAssociation,
             nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (volume || both) [self removeVolumeViewFromView:view];
     }
+}
+
+// A volume view on screen hides the system volume HUD, so only keep ours
+// around while the gesture is changing the volume.
+- (void)removeVolumeViewFromView:(UIView *)view {
+    __weak UIView *weakView = view;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        UIView *strong = weakView;
+        if (strong == nil) return;
+        for (UIGestureRecognizer *recognizer in strong.gestureRecognizers) {
+            if (recognizer.state == UIGestureRecognizerStateBegan ||
+                recognizer.state == UIGestureRecognizerStateChanged) return;
+        }
+        MPVolumeView *volumeView = objc_getAssociatedObject(strong, YTKACEVolumeViewAssociation);
+        [volumeView removeFromSuperview];
+        objc_setAssociatedObject(strong, YTKACEVolumeViewAssociation, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    });
 }
 
 - (double)seekStep {

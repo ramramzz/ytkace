@@ -55,12 +55,20 @@ void YTKACERegisterDefaults(void) {
     [YTKACEDefaults() registerDefaults:@{
         YTKACEMasterEnabledKey: @YES,
         YTKACENoAdsKey: @YES,
+        @"YTKACE.Preference.Tabs.DuoNativeBar": @YES,
+        @"YTKACE.Preference.Player.DuoDeskSplit": @YES,
+        @"YTKACE.Preference.Player.DuoStatusBarHidden": @YES,
         YTKACEOLEDKey: @NO,
         YTKACEDownloadKey: @NO,
         YTKACEBackgroundPlaybackKey: @YES,
         YTKACEPiPKey: @NO,
         YTKACESpeedKey: @NO,
         YTKACELoopKey: @NO,
+        @"YTKACE.Preference.Player.QualityButton": @NO,
+        @"YTKACE.Preference.Playback.YouThereDisabled": @NO,
+        @"YTKACE.Preference.Player.AutoFullscreen": @NO,
+        @"YTKACE.Preference.Player.ExitFullscreenAtEnd": @NO,
+        @"YTKACE.Preference.Gestures.SwipeToSeek": @NO,
         @"YTKACE.Preference.Playback.CustomDoubleTap": @NO,
         @"YTKACE.Preference.Playback.TapToSeek": @NO,
         @"YTKACE.Preference.Sharing.NativeSheet": @NO,
@@ -83,6 +91,7 @@ void YTKACERegisterDefaults(void) {
         @"YTKACE.Preference.Feed.CommunityPostsHidden": @NO,
         @"YTKACE.Preference.Feed.HorizontalShelvesHidden": @NO,
         @"YTKACE.Preference.Feed.MixesHidden": @NO,
+        @"YTKACE.Preference.Feed.HomeLiveHidden": @NO,
         @"YTKACE.Preference.Feed.PlayablesHidden": @NO,
         @"YTKACE.Preference.Navigation.MessagesHidden": @NO,
         @"YTKACE.Preference.ActionBar.LikeHidden": @NO,
@@ -154,6 +163,7 @@ void YTKACERegisterDefaults(void) {
         @"YTKACE.Preference.Tabs.Hidden.History": @YES,
         @"YTKACE.Preference.Tabs.Hidden.Notifs": @YES,
         @"YTKACE.Preference.Tabs.Hidden.WatchLater": @YES,
+        @"YTKACE.Preference.Tabs.Hidden.CustomPlaylist": @YES,
         @"YTKACE.Preference.Tabs.Order": @[@"home", @"shorts", @"subscriptions", @"library", @"ytkace"]
     }];
     if (!hasPlacement && [legacyDownloadButton boolValue]) {
