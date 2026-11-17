@@ -172,7 +172,8 @@ static BOOL YTKACEIsShortsActionIdentifier(NSString *identifier) {
         [identifier isEqualToString:@"id.reel_comment_button"] ||
         [identifier isEqualToString:@"id.reel_share_button"] ||
         [identifier isEqualToString:@"id.reel_remix_button"] ||
-        [identifier isEqualToString:@"id.reel_pivot_button"];
+        [identifier isEqualToString:@"id.reel_pivot_button"] ||
+        [identifier isEqualToString:@"id.ytkace_dislike_button"];
 }
 
 static BOOL YTKACEIsShortsActionView(UIView *view, UIView *root,
@@ -236,12 +237,22 @@ static void YTKACECollectShortsActions(UIView *view,
     YTKACECollectShortsActionsWalk(view, root, includeHidden, &metrics, views);
 }
 
+static BOOL YTKACEShortsHasDislikeView(NSArray<UIView *> *actions) {
+    for (UIView *action in actions) {
+        if (!action.hidden && [action.accessibilityIdentifier isEqualToString:@"id.ytkace_dislike_button"]) return YES;
+    }
+    return NO;
+}
+
 static UIView *YTKACEVisibleShortsAction(UIView *root) {
     NSMutableArray<UIView *> *actions = [NSMutableArray array];
     YTKACECollectShortsActions(root, root, NO, actions);
     NSString *expected = nil;
     if (!YTKACEFeatureEnabled(@"YTKACE.Preference.Shorts.LikeHidden")) {
         expected = @"id.reel_like_button";
+    } else if (YTKACEFeatureEnabled(@"YTKACE.Preference.Shorts.DislikeCount") &&
+               YTKACEShortsHasDislikeView(actions)) {
+        expected = @"id.ytkace_dislike_button";
     } else if (!YTKACEFeatureEnabled(@"YTKACE.Preference.Shorts.CommentsHidden")) {
         expected = @"id.reel_comment_button";
     } else if (!YTKACEFeatureEnabled(@"YTKACE.Preference.Shorts.ShareHidden")) {
@@ -963,6 +974,30 @@ static void YTKACEInstallShortsController(NSString *className) {
 
 static const void *YTKACEShortsLoopAssociation = &YTKACEShortsLoopAssociation;
 
+// Comments (or the description) are open over the Short.
+static BOOL YTKACEShortsPanelOpen(id shorts) {
+    if (!YTKACEFeatureEnabled(@"YTKACE.Preference.Shorts.AutoScrollWaitForComments")) return NO;
+    UIWindow *window = [shorts isKindOfClass:UIViewController.class]
+        ? ((UIViewController *)shorts).view.window : nil;
+    if (window == nil) return NO;
+    static Class panelClass;
+    if (panelClass == Nil) panelClass = NSClassFromString(@"YTEngagementPanelView");
+    if (panelClass == Nil) return NO;
+    NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:window];
+    while (stack.count != 0) {
+        UIView *view = stack.lastObject;
+        [stack removeLastObject];
+        if (view.hidden || view.alpha < 0.01) continue;
+        if ([view isKindOfClass:panelClass]) {
+            CGRect frame = [view convertRect:view.bounds toView:nil];
+            if (CGRectGetHeight(CGRectIntersection(frame, window.bounds)) > 40.0) return YES;
+            continue;
+        }
+        [stack addObjectsFromArray:view.subviews];
+    }
+    return NO;
+}
+
 static void YTKACEShortsTimeChanged(NSNotification *notification) {
     id player = notification.object;
     id shorts = YTKACEFindShortsController(player);
@@ -1026,6 +1061,8 @@ static void YTKACEShortsTimeChanged(NSNotification *notification) {
     if ([objc_getAssociatedObject(shorts, YTKACEShortsSkipAssociation) boolValue]) {
         return;
     }
+    // Hold off while comments are open; the next loop end tries again.
+    if (YTKACEShortsPanelOpen(shorts)) return;
     objc_setAssociatedObject(shorts, YTKACEShortsSkipAssociation, @YES,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     id delayValue = YTKACEPreferenceObject(@"YTKACE.Preference.Shorts.AutoScrollDelay");
@@ -1055,6 +1092,11 @@ static void YTKACEShortsTimeChanged(NSNotification *notification) {
         id nowID = [strongPlayer respondsToSelector:videoGetter]
             ? ((id (*)(id, SEL))objc_msgSend)(strongPlayer, videoGetter) : nil;
         if (videoID != nil && ![videoID isEqual:nowID]) return;
+        if (YTKACEShortsPanelOpen(strongShorts)) {
+            objc_setAssociatedObject(strongShorts, YTKACEShortsSkipAssociation, nil,
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            return;
+        }
         if (!YTKACEAdvanceShort(strongShorts, strongPlayer)) {
             objc_setAssociatedObject(strongShorts, YTKACEShortsSkipAssociation, nil,
                                      OBJC_ASSOCIATION_RETAIN_NONATOMIC);

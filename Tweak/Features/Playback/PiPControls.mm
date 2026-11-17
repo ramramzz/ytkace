@@ -11,6 +11,9 @@
 #import <AVKit/AVKit.h>
 #import <math.h>
 #import <objc/message.h>
+#import <objc/runtime.h>
+#import "../Downloads/DownloadLog.h"
+#import "../../Runtime/Hooking.h"
 
 @interface YTKACEPiPCoordinator : NSObject <AVPictureInPictureControllerDelegate>
 + (instancetype)sharedCoordinator;
@@ -24,6 +27,7 @@
 @property(nonatomic, strong) id youtubePlayer;
 @property(nonatomic, assign) BOOL observingItem;
 @property(nonatomic, assign) BOOL polling;
+@property(nonatomic, weak) AVPictureInPictureController *nativeController;
 - (void)togglePiP;
 @end
 
@@ -246,8 +250,57 @@
     self.player = nil;
 }
 
+static id YTKACEPiPIvar(id object, const char *name) {
+    if (object == nil) return nil;
+    Ivar ivar = class_getInstanceVariable(object_getClass(object), name);
+    return ivar != NULL ? object_getIvar(object, ivar) : nil;
+}
+
+static BOOL YTKACEPiPCall(id object, NSString *name) {
+    SEL selector = NSSelectorFromString(name);
+    if (object == nil || ![object respondsToSelector:selector]) return NO;
+    ((void (*)(id, SEL))objc_msgSend)(object, selector);
+    return YES;
+}
+
+static BOOL YTKACEPiPBool(id object, NSString *name) {
+    SEL selector = NSSelectorFromString(name);
+    return object != nil && [object respondsToSelector:selector] &&
+        ((BOOL (*)(id, SEL))objc_msgSend)(object, selector);
+}
+
+// YouTube's own PiP, like YouPiP: instant, and keeps speed, audio track
+// and quality because it's the same playback.
+- (BOOL)startNativePiP {
+    id local = YTKACEPiPIvar([self activeYouTubePlayer], "_playbackController");
+    id pipController = YTKACEPiPIvar(local, "_playerPIPController");
+    id ml = YTKACEPiPIvar(pipController, "_pipController");
+    if (pipController == nil || ml == nil) {
+        YTKACEDebugLog(@"pip", @"native unavailable local=%@ pip=%@ ml=%@",
+            local != nil ? NSStringFromClass([local class]) : @"nil",
+            pipController != nil ? NSStringFromClass([pipController class]) : @"nil",
+            ml != nil ? NSStringFromClass([ml class]) : @"nil");
+        return NO;
+    }
+    if (!YTKACEPiPCall(pipController, @"maybeEnablePictureInPicture") &&
+        !YTKACEPiPCall(pipController, @"maybeInvokePictureInPicture") &&
+        (YTKACEPiPBool(pipController, @"canEnablePictureInPicture") ||
+         YTKACEPiPBool(pipController, @"canInvokePictureInPicture"))) {
+        if (!YTKACEPiPCall(ml, @"activatePiPController")) YTKACEPiPCall(ml, @"startPictureInPicture");
+    }
+    AVPictureInPictureController *avpip = YTKACEPiPIvar(ml, "_pictureInPictureController");
+    if (![avpip isKindOfClass:AVPictureInPictureController.class]) return NO;
+    self.nativeController = avpip;
+    if (avpip.isPictureInPicturePossible && !avpip.isPictureInPictureActive) [avpip startPictureInPicture];
+    return YES;
+}
+
 - (void)togglePiP {
     if (!YTKACEFeatureEnabled(YTKACEPiPKey)) {
+        return;
+    }
+    if (self.nativeController.isPictureInPictureActive) {
+        [self.nativeController stopPictureInPicture];
         return;
     }
     if (self.controller.isPictureInPictureActive) {
@@ -258,6 +311,25 @@
         [self showError:@"PiP is not supported on this device."];
         return;
     }
+    if ([self startNativePiP]) {
+        // fall back to our own player if YouTube's PiP didn't start
+        __weak YTKACEPiPCoordinator *weakSelf = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            YTKACEPiPCoordinator *strongSelf = weakSelf;
+            AVPictureInPictureController *avpip = strongSelf.nativeController;
+            BOOL active = avpip.isPictureInPictureActive;
+            YTKACEDebugLog(@"pip", @"native active=%d possible=%d", active, avpip.isPictureInPicturePossible);
+            if (!active && UIApplication.sharedApplication.applicationState == UIApplicationStateActive) {
+                [strongSelf startFallbackPiP];
+            }
+        });
+        return;
+    }
+    [self startFallbackPiP];
+}
+
+- (void)startFallbackPiP {
     [self showLoading];
     [self resumeYouTubePlayer];
     [self clearPlayer];
@@ -383,7 +455,87 @@
 
 @end
 
+// With PiP turned on by YTKACE, YouTube doesn't tell its PiP object when the
+// video pauses until PiP is open. So iOS is told a paused video is playing
+// and starts PiP when you leave the app. Until PiP is open, the paused state
+// comes from the player's own state changes; once it's open, YouTube's.
+static IMP OriginalPiPMediaState;
+static IMP OriginalIsPlaybackPaused;
+static const void *YTKACEPiPPausedAssociation = &YTKACEPiPPausedAssociation;
+static const NSInteger YTKACEMediaStatePlaying = 3;
+static const NSInteger YTKACEMediaStatePaused = 4;
+
+static void YTKACEPiPMediaStateDidChange(id receiver, SEL selector, id video, NSInteger from, NSInteger to) {
+    ((void (*)(id, SEL, id, NSInteger, NSInteger))OriginalPiPMediaState)(receiver, selector, video, from, to);
+    if (to != YTKACEMediaStatePlaying && to != YTKACEMediaStatePaused) return;
+    id ml = YTKACEPiPIvar(receiver, "_pipController");
+    if (ml == nil) return;
+    objc_setAssociatedObject(ml, YTKACEPiPPausedAssociation, @(to == YTKACEMediaStatePaused), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // iOS asks again only when told to; PiP being open is YouTube's to update.
+    AVPictureInPictureController *avpip = YTKACEPiPIvar(ml, "_pictureInPictureController");
+    if ([avpip isKindOfClass:AVPictureInPictureController.class] && !avpip.isPictureInPictureActive &&
+        [avpip respondsToSelector:@selector(invalidatePlaybackState)]) {
+        [avpip invalidatePlaybackState];
+    }
+}
+
+// The rate of the layer PiP would show, or -1 if there's no way to tell.
+static double YTKACEPiPContentRate(AVPictureInPictureController *controller) {
+    if (@available(iOS 15.0, *)) {
+        AVPictureInPictureControllerContentSource *source = controller.contentSource;
+        AVSampleBufferDisplayLayer *layer = source.sampleBufferDisplayLayer;
+        if (layer != nil) {
+            CMTimebaseRef timebase = NULL;
+            if (@available(iOS 14.5, *)) timebase = layer.timebase;
+            if (timebase == NULL) timebase = layer.controlTimebase;
+            if (timebase != NULL) return CMTimebaseGetRate(timebase);
+        }
+        AVPlayer *player = source.playerLayer.player;
+        if (player != nil) return player.rate;
+    }
+    AVPlayer *player = controller.playerLayer.player;
+    return player != nil ? player.rate : -1.0;
+}
+
+static BOOL YTKACEPiPIsPlaybackPaused(id receiver, SEL selector, AVPictureInPictureController *controller) {
+    BOOL paused = OriginalIsPlaybackPaused != NULL &&
+        ((BOOL (*)(id, SEL, id))OriginalIsPlaybackPaused)(receiver, selector, controller);
+    if (![controller isKindOfClass:AVPictureInPictureController.class] || controller.isPictureInPictureActive) return paused;
+    const double rate = YTKACEPiPContentRate(controller);
+    NSNumber *tracked = objc_getAssociatedObject(receiver, YTKACEPiPPausedAssociation);
+    if (rate >= 0.0) return rate == 0.0;
+    return tracked != nil ? tracked.boolValue : paused;
+}
+
+// With one of YouTube's flags on, when PiP closes, any player YouTube thinks
+// can't do PiP (a Short, or one still around from earlier) turns PiP off for
+// the shared controller, so leaving the app never starts it again. YTKACE
+// decides which videos get PiP, so that shutoff is skipped.
+static IMP OriginalPiPDidStop;
+static IMP OriginalPiPDeactivate;
+static BOOL YTKACEPiPStopping;
+
+static void YTKACEPiPDidStop(id receiver, SEL selector) {
+    const BOOL previous = YTKACEPiPStopping;
+    YTKACEPiPStopping = YES;
+    ((void (*)(id, SEL))OriginalPiPDidStop)(receiver, selector);
+    YTKACEPiPStopping = previous;
+}
+
+static void YTKACEPiPDeactivate(id receiver, SEL selector) {
+    if (YTKACEPiPStopping) return;
+    ((void (*)(id, SEL))OriginalPiPDeactivate)(receiver, selector);
+}
+
 void YTKACEInstallPiPHooks(void) {
+    YTKACEInstallInstanceHook(@"YTPlayerPIPController", @"didStopPictureInPicture",
+                              (IMP)YTKACEPiPDidStop, &OriginalPiPDidStop);
+    YTKACEInstallInstanceHook(@"MLPIPControllerImpl", @"deactivatePiPController",
+                              (IMP)YTKACEPiPDeactivate, &OriginalPiPDeactivate);
+    YTKACEInstallInstanceHook(@"YTPlayerPIPController", @"singleVideo:mediaStateDidChangeFromState:toState:",
+                              (IMP)YTKACEPiPMediaStateDidChange, &OriginalPiPMediaState);
+    YTKACEInstallInstanceHook(@"MLPIPControllerImpl", @"pictureInPictureControllerIsPlaybackPaused:",
+                              (IMP)YTKACEPiPIsPlaybackPaused, &OriginalIsPlaybackPaused);
     YTKACERegisterOverlayConfigurator(@"pip", ^(UIView *overlay, UIStackView *stack) {
         YTKACEPiPCoordinator.sharedCoordinator.overlay = overlay;
         UIButton *button = YTKACEOverlayButton(

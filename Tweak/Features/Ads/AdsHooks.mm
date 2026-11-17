@@ -196,13 +196,30 @@ static BOOL YTKACEAdsURLIsBlocked(NSURL *URL) {
     return NO;
 }
 
+// AVFoundation download tasks (YouTube's offline downloads) throw on
+// currentRequest, which crashed every launch while one was queued.
+static NSURLRequest *YTKACETaskRequest(NSURLSessionTask *task) {
+    static Class assetTask, aggregateTask;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        assetTask = NSClassFromString(@"AVAssetDownloadTask");
+        aggregateTask = NSClassFromString(@"AVAggregateAssetDownloadTask");
+    });
+    if ((assetTask != Nil && [task isKindOfClass:assetTask]) ||
+        (aggregateTask != Nil && [task isKindOfClass:aggregateTask])) return nil;
+    @try {
+        return task.currentRequest ?: task.originalRequest;
+    } @catch (__unused NSException *exception) {
+        return nil;
+    }
+}
+
 static void YTKACEURLSessionTaskResume(NSURLSessionTask *task, SEL selector) {
-    if (YTKACEFeatureEnabled(YTKACENoAdsKey)) {
-        NSURLRequest *request = task.currentRequest ?: task.originalRequest;
-        if (YTKACEAdsURLIsBlocked(request.URL)) {
-            [task cancel];
-            return;
-        }
+    NSURLRequest *request = YTKACETaskRequest(task);
+    if (YTKACEShouldBlockPlaybackHeartbeat(request.URL) ||
+        (YTKACEFeatureEnabled(YTKACENoAdsKey) && YTKACEAdsURLIsBlocked(request.URL))) {
+        [task cancel];
+        return;
     }
     if (OriginalURLSessionTaskResume != NULL) {
         ((void (*)(id, SEL))OriginalURLSessionTaskResume)(task, selector);
@@ -670,12 +687,17 @@ void YTKACEInstallAdsHooks(void) {
                               @"decorateContext:",
                               (IMP)YTKACEAdsDecorateContext,
                               &OriginalAdsDecorateContext);
-    YTKACEInstallInstanceHook(@"YTAccountScopedAdsInnerTubeContextDecorator",
+    // Renamed to ...Impl in YouTube 21.46.
+    NSString *accountDecorator =
+        NSClassFromString(@"YTAccountScopedAdsInnerTubeContextDecoratorImpl") != Nil
+            ? @"YTAccountScopedAdsInnerTubeContextDecoratorImpl"
+            : @"YTAccountScopedAdsInnerTubeContextDecorator";
+    YTKACEInstallInstanceHook(accountDecorator,
                               @"decorateContext:",
                               (IMP)YTKACEAccountAdsDecorateContext,
                               &OriginalAccountAdsDecorateContext);
     YTKACEInstallAdsDecorateServiceHook(
-        @"YTAccountScopedAdsInnerTubeContextDecorator",
+        accountDecorator,
         (IMP)YTKACEAccountAdsDecorateService,
         &OriginalAccountAdsDecorateService
     );

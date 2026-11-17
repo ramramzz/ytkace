@@ -90,6 +90,7 @@ NSInteger YTKACEPlaybackFixMode(void);
 id _Nullable YTKACEHLSOriginalResponse(NSString * _Nullable videoID);
 BOOL YTKACEHLSBeginFallback(NSString * _Nullable videoID, void (^ _Nonnull ready)(BOOL available));
 void YTKACEInstallShortsHooks(void);
+void YTKACEInstallShortsFeedFilterHooks(void);
 void YTKACEInstallSideloadCompatibilityHooks(void);
 void YTKACEInstallCastCompatibilityHooks(void);
 void YTKACEStartCastDiscovery(void);
@@ -120,12 +121,18 @@ BOOL YTKACEProductIdentifierMatches(NSString * _Nullable identifier);
 BOOL YTKACEViewIsInsidePlayerOverlay(UIView *view);
 void YTKACEHideProductSubtree(UIView *view);
 BOOL YTKACEProductOverlayMatches(id overlay);
+NSAttributedString * _Nullable YTKACESubtitleWithoutProductCount(id _Nullable node,
+    NSAttributedString * _Nullable text);
 void YTKACEInstallNativeShareHooks(void);
+void YTKACEReturnDislikeConsiderView(UIView *view);
+NSAttributedString *YTKACEDislikeMetaText(id node, NSAttributedString *value);
+void YTKACEInstallReturnDislikeHooks(void);
 void YTKACEProfileConsiderDisplayView(UIView *view, id node);
 void YTKACEScheduleFirstLaunch(void);
 
 NS_ASSUME_NONNULL_END
 void YTKACEInstallPlaybackFixHooks(void);
+BOOL YTKACEShouldBlockPlaybackHeartbeat(NSURL * _Nullable URL);
 NSDictionary<NSString *, NSString *> * _Nullable YTKACESolveChallenges(NSString * _Nullable playerID,
     NSString * _Nullable playerJS, NSString * _Nonnull type, NSArray<NSString *> * _Nonnull challenges);
 NSData * _Nonnull YTKACETVClientInfo(void);
