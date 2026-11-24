@@ -29,7 +29,6 @@ static IMP OriginalChipBarUpdate;
 static IMP OriginalChipCloudSetEntry;
 static IMP OriginalSubsChipFilter;
 static IMP OriginalChipCloudLayout;
-static IMP OriginalFeedHeaderScrollMode;
 static IMP OriginalSubsSetChipFilterView;
 static IMP OriginalMaximumSubheaderHeight;
 static IMP OriginalMaximumSubheaderHeightGetter;
@@ -358,14 +357,38 @@ static BOOL YTKACEIsActionButtonIdentifier(NSString *identifier);
 static IMP OriginalLocalImage;
 static IMP OriginalResourceImage;
 static IMP OriginalResourceImageBoost;
+extern "C" void YTKACEShortsTopBarChildMoved(UIView *view);
+
 static __thread void *YTKACELoadingImageNode;
 static const void *YTKACEIconNameAssociation = &YTKACEIconNameAssociation;
+
+static BOOL YTKACEIsShortsTopBarIcon(NSString *name) {
+    NSString *icon = name.lastPathComponent.lowercaseString;
+    return [icon hasPrefix:@"bubble_stack"] || [icon containsString:@"search"];
+}
 
 static void YTKACETagLoadingNode(NSString *name) {
     void *node = YTKACELoadingImageNode;
     if (node == NULL || ![name isKindOfClass:NSString.class]) return;
     objc_setAssociatedObject((__bridge id)node, YTKACEIconNameAssociation,
                              name, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    // The icon can arrive after the button is on screen.
+    if (YTKACEIsShortsTopBarIcon(name)) {
+        __weak id weakNode = (__bridge id)node;
+        [NSOperationQueue.mainQueue addOperationWithBlock:^{
+            id strongNode = weakNode;
+            if (strongNode == nil ||
+                !((BOOL (*)(id, SEL))objc_msgSend)(strongNode, NSSelectorFromString(@"isNodeLoaded"))) return;
+            UIView *view = ((UIView *(*)(id, SEL))objc_msgSend)(strongNode, NSSelectorFromString(@"view"));
+            if (view.window != nil) YTKACEShortsTopBarChildMoved(view);
+        }];
+    }
+}
+
+extern "C" NSString *YTKACEElementIconName(UIView *view) {
+    if (![view respondsToSelector:NSSelectorFromString(@"asyncdisplaykit_node")]) return nil;
+    id node = ((id (*)(id, SEL))objc_msgSend)(view, NSSelectorFromString(@"asyncdisplaykit_node"));
+    return node == nil ? nil : objc_getAssociatedObject(node, YTKACEIconNameAssociation);
 }
 
 static id YTKACELocalImage(id node, SEL selector, const void *image,
@@ -391,6 +414,9 @@ static id YTKACEResourceImageBoost(id loader, SEL selector, NSString *name,
     return ((id (*)(id, SEL, id, id, id, float))OriginalResourceImageBoost)(
         loader, selector, name, color, bundle, ratio);
 }
+
+static void YTKACEEnsureIconNameHooks(void);
+extern "C" void YTKACEEnsureElementIconNames(void) { YTKACEEnsureIconNameHooks(); }
 
 static void YTKACEEnsureIconNameHooks(void) {
     static dispatch_once_t onceToken;
@@ -1298,10 +1324,20 @@ static void YTKACEFixedBarLayoutSubviews(UIView *receiver, SEL selector) {
     if (keep.count == 0 || (keep.count == slots.count && order.count == 0)) return;
 
     // Saved order first; buttons the order doesn't name keep YouTube's order
-    // after them.
+    // after them. Slots we can't name (⋯ items the model already moved into
+    // place) stay where they are; only the named ones swap among themselves.
     if (order.count != 0) {
-        NSArray<UIView *> *natural = [keep copy];
-        [keep sortUsingComparator:^NSComparisonResult(UIView *left, UIView *right) {
+        NSMutableArray<UIView *> *named = [NSMutableArray array];
+        NSMutableIndexSet *namedPositions = [NSMutableIndexSet indexSet];
+        for (NSUInteger index = 0; index < keep.count; index++) {
+            // ⋯ stays where YouTube put it, at the end.
+            NSString *name = [names objectForKey:keep[index]];
+            if (name == nil || [name isEqualToString:@"Overflow"]) continue;
+            [named addObject:keep[index]];
+            [namedPositions addIndex:index];
+        }
+        NSArray<UIView *> *natural = [named copy];
+        [named sortUsingComparator:^NSComparisonResult(UIView *left, UIView *right) {
             NSUInteger leftRank = [order indexOfObject:[names objectForKey:left] ?: @""];
             NSUInteger rightRank = [order indexOfObject:[names objectForKey:right] ?: @""];
             if (leftRank == NSNotFound) leftRank = order.count + [natural indexOfObject:left];
@@ -1310,6 +1346,7 @@ static void YTKACEFixedBarLayoutSubviews(UIView *receiver, SEL selector) {
             if (leftRank > rightRank) return NSOrderedDescending;
             return NSOrderedSame;
         }];
+        [keep replaceObjectsAtIndexes:namedPositions withObjects:named];
     }
 
     // Keep YouTube's slot width and pack the remaining buttons to the right
@@ -1325,8 +1362,16 @@ static void YTKACEFixedBarLayoutSubviews(UIView *receiver, SEL selector) {
 
     static NSTimeInterval lastLog = 0.0;
     NSTimeInterval now = NSDate.timeIntervalSinceReferenceDate;
-    if (now - lastLog > 2.0) {
+    static NSString *lastTrace = nil;
+    NSMutableArray<NSString *> *final = [NSMutableArray array];
+    for (UIView *slot in keep) [final addObject:[names objectForKey:slot] ?: @"?"];
+    NSString *line = [NSString stringWithFormat:@"fixed slots=%@ final=%@ order=%@",
+        [trace componentsJoinedByString:@","], [final componentsJoinedByString:@","],
+        [order componentsJoinedByString:@","]];
+    if (now - lastLog > 2.0 || ![line isEqualToString:lastTrace]) {
         lastLog = now;
+        lastTrace = line;
+        YTKACEDebugLog(@"actionbar", @"%@", line);
     }
 }
 
@@ -2504,6 +2549,7 @@ static BOOL YTKACEMixFilteredEntries(id section) {
         if (YTKACEEntryIsMix(entry)) [drop addIndex:index];
     }];
     if (drop.count == 0) return NO;
+    YTKACEDebugLog(@"feed", @"removed %lu of %lu mixes", (unsigned long)drop.count, (unsigned long)[(NSArray *)contents count]);
     [(NSMutableArray *)contents removeObjectsAtIndexes:drop];
     return [(NSArray *)contents count] == 0;
 }
@@ -2521,6 +2567,23 @@ static NSArray *YTKACEMixFilteredFeedSections(NSArray *sections) {
     NSMutableArray *kept = [sections mutableCopy];
     [kept removeObjectsAtIndexes:empty];
     return kept;
+}
+
+// A section holding many results (search) with a Shorts shelf among them:
+// remove just the Shorts entries. Returns NO when the whole section should go.
+static BOOL YTKACEDropShortsEntries(id section) {
+    id contents = YTKACEFastChildSel(section, YTKACESelContentsArray);
+    if (![contents isKindOfClass:NSMutableArray.class] || [contents count] < 2) return NO;
+    NSMutableIndexSet *drop = [NSMutableIndexSet indexSet];
+    [(NSArray *)contents enumerateObjectsUsingBlock:^(id entry, NSUInteger index, __unused BOOL *stop) {
+        if (YTKACEFeedKindForSection(entry, YTKACEFeedKindShorts) & YTKACEFeedKindShorts) [drop addIndex:index];
+    }];
+    if (drop.count == [contents count]) return NO;
+    if (drop.count == 0) return YES;
+    [(NSMutableArray *)contents removeObjectsAtIndexes:drop];
+    YTKACEDebugLog(@"feed", @"removed %lu shorts of %lu in one section", (unsigned long)drop.count,
+                   (unsigned long)([contents count] + drop.count));
+    return YES;
 }
 
 static NSArray *YTKACEFilteredFeedSections(id receiver, NSArray *sections) {
@@ -2577,6 +2640,11 @@ static NSArray *YTKACEFilteredFeedSections(id receiver, NSArray *sections) {
         YTKACEFeedKind kind = wanted != 0 ? YTKACEFeedKindForSection(section, wanted) : 0;
         NSString *cut = nil;
         if ((hideAIBlock || hideAIWarn) && YTKACESectionIsAIChannel(receiver, section, hideAIBlock, hideAIWarn)) {
+            continue;
+        }
+        if (hideShorts && (kind & YTKACEFeedKindShorts) && YTKACEDropShortsEntries(section)) {
+            // Search puts every result in one section; only its Shorts were removed.
+            [filtered addObject:section];
             continue;
         }
         if (hideShorts && (kind & YTKACEFeedKindShorts)) cut = @"shorts";
@@ -2847,6 +2915,7 @@ static void YTKACEDisplayViewDidMove(UIView *receiver, SEL selector) {
     YTKACEApplyContentVisibility(receiver);
     YTKACEConsiderProductDisplayView(receiver, receiver.accessibilityIdentifier);
     YTKACEReturnDislikeConsiderView(receiver);
+    if (receiver.window != nil) YTKACEShortsTopBarChildMoved(receiver);
 }
 
 
@@ -2880,8 +2949,50 @@ static void YTKACEDisplayViewSetIdentifier(UIView *receiver,
     YTKACEConsiderProductDisplayView(receiver, identifier);
 }
 
+BOOL YTKACEHomeTabsLayoutActive(void);
+
 static BOOL YTKACEHideTopics(void) {
     return YTKACEFeatureEnabled(@"YTKACE.Preference.Navigation.TopicsHidden");
+}
+
+// The header hooks fold away the bar under the top bar. With the Home and
+// Subscriptions tabs layout that bar holds the tabs, and folding it hangs or
+// crashes YouTube at launch.
+static BOOL YTKACEHideTopicsHeader(void) {
+    if (!YTKACEHideTopics()) return NO;
+    if (YTKACEHomeTabsLayoutActive()) {
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{ YTKACEDebugLog(@"topics", @"tabs layout, header left alone"); });
+        return NO;
+    }
+    return YES;
+}
+
+static char YTKACETabsHeaderKey;
+
+static BOOL YTKACEIsTabTitlesView(id view) {
+    if (![view isKindOfClass:UIView.class]) return NO;
+    if ([NSStringFromClass([view class]) containsString:@"TabTitles"]) return YES;
+    for (UIResponder *r = view; r; r = r.nextResponder) {
+        if ([r isKindOfClass:UIViewController.class]) {
+            return [NSStringFromClass(r.class) containsString:@"TabTitles"];
+        }
+    }
+    return NO;
+}
+
+// Same as above for one header: also leaves it alone when its bar holds the
+// Home and Subscriptions tabs, which YouTube can turn on from the server.
+static BOOL YTKACEHideTopicsHeaderFor(id header) {
+    if (!YTKACEHideTopicsHeader()) return NO;
+    if (header == nil) return YES;
+    if (objc_getAssociatedObject(header, &YTKACETabsHeaderKey) != nil) return NO;
+    SEL subheader = NSSelectorFromString(@"subheaderView");
+    if ([header respondsToSelector:subheader] &&
+        YTKACEIsTabTitlesView(((id (*)(id, SEL))objc_msgSend)(header, subheader))) {
+        return NO;
+    }
+    return YES;
 }
 
 static void YTKACECollapseSubheader(id receiver) {
@@ -2904,7 +3015,7 @@ static void YTKACECollapseSubheader(id receiver) {
 }
 
 static double YTKACEMaximumSubheaderHeightGetter(id receiver, SEL selector) {
-    if (YTKACEHideTopics()) return 0.0;
+    if (YTKACEHideTopicsHeaderFor(receiver)) return 0.0;
     return OriginalMaximumSubheaderHeightGetter == NULL
         ? 0.0
         : ((double (*)(id, SEL))OriginalMaximumSubheaderHeightGetter)(
@@ -2912,7 +3023,7 @@ static double YTKACEMaximumSubheaderHeightGetter(id receiver, SEL selector) {
 }
 
 static double YTKACESubheaderDefaultHeight(id receiver, SEL selector) {
-    if (YTKACEHideTopics()) return 0.0;
+    if (YTKACEHideTopicsHeaderFor(receiver)) return 0.0;
     return OriginalSubheaderDefaultHeight == NULL
         ? 0.0
         : ((double (*)(id, SEL))OriginalSubheaderDefaultHeight)(
@@ -3031,9 +3142,58 @@ static void YTKACEDidInsertPlayerOverlay(id receiver, SEL selector,
     }
 }
 
+static NSString *YTKACEOwnerName(id view) {
+    for (UIResponder *r = [view isKindOfClass:UIResponder.class] ? view : nil; r; r = r.nextResponder) {
+        if ([r isKindOfClass:UIViewController.class]) return NSStringFromClass(r.class);
+    }
+    return @"-";
+}
+
+// With the Home tabs layout the tabs row is the page's subheader. Handing
+// YouTube no subheader takes its normal path for pages without one, so the
+// row and its space are gone without folding the header, which hangs launch.
+static IMP OriginalActiveSubheaderView;
+
+static id YTKACEActiveSubheaderView(id receiver, SEL selector) {
+    id view = OriginalActiveSubheaderView == NULL ? nil
+        : ((id (*)(id, SEL))OriginalActiveSubheaderView)(receiver, selector);
+    if (view != nil && YTKACEHideTopics() &&
+        [NSStringFromClass([view class]) containsString:@"TabTitles"]) {
+        return nil;
+    }
+    return view;
+}
+
+// The page under it still counts the row's height in its header; leave it out.
+static IMP OriginalTotalHeaderHeight;
+
+static double YTKACETotalHeaderHeight(id receiver, SEL selector, double parent, double header,
+                                      double subheader) {
+    if (subheader > 0.0 && YTKACEHideTopics()) {
+        SEL getter = NSSelectorFromString(@"subheaderViewController");
+        id controller = [receiver respondsToSelector:getter]
+            ? ((id (*)(id, SEL))objc_msgSend)(receiver, getter) : nil;
+        if (controller != nil && [NSStringFromClass([controller class]) containsString:@"TabTitles"]) {
+            subheader = 0.0;
+        }
+    }
+    return OriginalTotalHeaderHeight == NULL ? parent + header + subheader
+        : ((double (*)(id, SEL, double, double, double))OriginalTotalHeaderHeight)(
+              receiver, selector, parent, header, subheader);
+}
+
 static void YTKACEEnableSubheaderBar(__unsafe_unretained id receiver, SEL selector,
                                      __unsafe_unretained id view) {
-    BOOL hide = YTKACEHideTopics();
+    YTKACEDebugLog(@"topics", @"enable subheader view=%@ owner=%@ sub0=%@ tabsActive=%d",
+                   NSStringFromClass([view class]), YTKACEOwnerName(view),
+                   [view isKindOfClass:UIView.class] && [(UIView *)view subviews].count
+                       ? NSStringFromClass([(UIView *)view subviews].firstObject.class) : @"-",
+                   YTKACEHomeTabsLayoutActive());
+    if (YTKACEIsTabTitlesView(view)) {
+        objc_setAssociatedObject(receiver, &YTKACETabsHeaderKey, @YES,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    BOOL hide = YTKACEHideTopicsHeaderFor(receiver);
     if (hide) {
         YTKACECollapseSubheader(receiver);
         return;
@@ -3043,19 +3203,38 @@ static void YTKACEEnableSubheaderBar(__unsafe_unretained id receiver, SEL select
     }
 }
 
+static IMP OriginalChipBarImplUpdate;
+
+static void YTKACEChipBarForward(IMP original, id receiver, SEL selector, id collectionViewController,
+                                 id host, id renderer, id browseIdentifier, id sectionList) {
+    if (YTKACEHideTopicsHeader()) return;
+    if (original != NULL) {
+        ((void (*)(id, SEL, id, id, id, id, id))original)(
+            receiver, selector, collectionViewController, host, renderer,
+            browseIdentifier, sectionList);
+    }
+}
+
 static void YTKACEChipBarUpdate(__unsafe_unretained id receiver, SEL selector,
                                 __unsafe_unretained id collectionViewController,
                                 __unsafe_unretained id host,
                                 __unsafe_unretained id renderer,
                                 __unsafe_unretained id browseIdentifier,
                                 __unsafe_unretained id sectionList) {
-    BOOL hide = YTKACEHideTopics();
-    if (hide) return;
-    if (OriginalChipBarUpdate != NULL) {
-        ((void (*)(id, SEL, id, id, id, id, id))OriginalChipBarUpdate)(
-            receiver, selector, collectionViewController, host, renderer,
-            browseIdentifier, sectionList);
-    }
+    YTKACEChipBarForward(OriginalChipBarUpdate, receiver, selector, collectionViewController,
+                         host, renderer, browseIdentifier, sectionList);
+}
+
+// Newer YouTube renamed the chip bar controller. Loading it reserves the chip
+// row above the feed even when the chips are hidden.
+static void YTKACEChipBarImplUpdate(__unsafe_unretained id receiver, SEL selector,
+                                    __unsafe_unretained id collectionViewController,
+                                    __unsafe_unretained id host,
+                                    __unsafe_unretained id renderer,
+                                    __unsafe_unretained id browseIdentifier,
+                                    __unsafe_unretained id sectionList) {
+    YTKACEChipBarForward(OriginalChipBarImplUpdate, receiver, selector, collectionViewController,
+                         host, renderer, browseIdentifier, sectionList);
 }
 
 static void YTKACEChipCloudSetEntry(__unsafe_unretained id receiver, SEL selector,
@@ -3092,20 +3271,165 @@ static void YTKACEChipCloudLayout(__unsafe_unretained id receiver, SEL selector)
     }
 }
 
-static void YTKACEFeedHeaderScrollMode(__unsafe_unretained id receiver, SEL selector,
-                                       int mode) {
-    if (OriginalFeedHeaderScrollMode != NULL) {
-        ((void (*)(id, SEL, int))OriginalFeedHeaderScrollMode)(
-            receiver, selector, YTKACEHideTopics() ? 0 : mode);
-    }
-}
-
 static IMP OriginalChipViewFrames;
 
 static id YTKACEChipViewFrames(__unsafe_unretained id receiver, SEL selector, double width) {
     if (YTKACEHideTopics()) return nil;
     return OriginalChipViewFrames == NULL ? nil
         : ((id (*)(id, SEL, double))OriginalChipViewFrames)(receiver, selector, width);
+}
+
+// Newer Subscriptions headers draw the chips as an element row under the
+// channel avatars. Mark that row when it's built, then hide it and leave its
+// height out of the header.
+static char YTKACESubsChipRowKey;
+static IMP OriginalSubsLoadElement;
+static IMP OriginalSubsHeaderSize;
+static IMP OriginalSubsHeaderLayout;
+
+static NSArray *YTKACESubsElementViews(id header) {
+    Ivar ivar = header != nil ? class_getInstanceVariable(object_getClass(header), "_elementViews") : NULL;
+    id views = ivar != NULL ? object_getIvar(header, ivar) : nil;
+    return [views isKindOfClass:NSArray.class] ? [views copy] : @[];
+}
+
+static void YTKACESubsLoadElement(id receiver, SEL selector, id renderer) {
+    UIView *header = [receiver isKindOfClass:UIViewController.class] && [(UIViewController *)receiver isViewLoaded]
+        ? [(UIViewController *)receiver view] : nil;
+    NSArray *before = YTKACESubsElementViews(header);
+    if (OriginalSubsLoadElement != NULL) {
+        ((void (*)(id, SEL, id))OriginalSubsLoadElement)(receiver, selector, renderer);
+    }
+    NSData *bytes = YTKACESectionBytes(renderer);
+    static const char marker[] = "subscriptions_chip_bar";
+    if (bytes.length == 0 || memmem(bytes.bytes, bytes.length, marker, sizeof(marker) - 1) == NULL) return;
+    for (id view in YTKACESubsElementViews(header)) {
+        if (![before containsObject:view]) {
+            objc_setAssociatedObject(view, &YTKACESubsChipRowKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    }
+    [header setNeedsLayout];
+}
+
+static BOOL YTKACEIsSubsChipRow(UIView *view) {
+    return YTKACEHideTopics() && objc_getAssociatedObject(view, &YTKACESubsChipRowKey) != nil;
+}
+
+static CGSize YTKACESubsHeaderSize(id receiver, SEL selector, CGSize size) {
+    CGSize result = OriginalSubsHeaderSize == NULL ? CGSizeZero
+        : ((CGSize (*)(id, SEL, CGSize))OriginalSubsHeaderSize)(receiver, selector, size);
+    for (UIView *view in YTKACESubsElementViews(receiver)) {
+        if (!YTKACEIsSubsChipRow(view)) continue;
+        CGFloat height = CGRectGetHeight(view.frame);
+        if (height <= 0.0) height = [view sizeThatFits:size].height;
+        result.height = MAX(0.0, result.height - height);
+    }
+    return result;
+}
+
+static void YTKACESubsHeaderLayout(id receiver, SEL selector) {
+    if (OriginalSubsHeaderLayout != NULL) {
+        ((void (*)(id, SEL))OriginalSubsHeaderLayout)(receiver, selector);
+    }
+    if (!YTKACEHideTopics()) return;
+    BOOL found = NO;
+    for (UIView *view in YTKACESubsElementViews(receiver)) {
+        if (objc_getAssociatedObject(view, &YTKACESubsChipRowKey) == nil) {
+            for (UIView *child in view.subviews) {
+                if ([child.accessibilityIdentifier containsString:@"subscriptions_chip_bar"]) {
+                    objc_setAssociatedObject(view, &YTKACESubsChipRowKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                    found = YES;
+                }
+            }
+        }
+        if (YTKACEIsSubsChipRow(view)) view.hidden = YES;
+    }
+    // The rows are laid out from the bottom up; with the chips gone, stack
+    // the rest from the top so the avatars don't end up above the header.
+    BOOL hiding = NO;
+    for (UIView *view in YTKACESubsElementViews(receiver)) hiding = hiding || YTKACEIsSubsChipRow(view);
+    if (hiding) {
+        CGFloat y = 0.0;
+        for (UIView *view in YTKACESubsElementViews(receiver)) {
+            if (view.hidden) continue;
+            CGRect frame = view.frame;
+            frame.origin.y = y;
+            view.frame = frame;
+            y += CGRectGetHeight(frame);
+        }
+    }
+    if (!found) return;
+    // The header's height was measured with the chips; measure it again.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        for (UIResponder *r = receiver; r != nil; r = r.nextResponder) {
+            SEL refresh = NSSelectorFromString(@"refreshHeaderHeight");
+            if ([r respondsToSelector:refresh]) {
+                ((void (*)(id, SEL))objc_msgSend)(r, refresh);
+                break;
+            }
+        }
+    });
+}
+
+// Voice search: the mic next to search in the top bar and in the search bar.
+static IMP OriginalRightButtonsLayout;
+static IMP OriginalSearchBarLayout;
+
+static BOOL YTKACEVoiceSearchHidden(void) {
+    return YTKACEFeatureEnabled(@"YTKACE.Preference.Search.VoiceButtonHidden");
+}
+
+static BOOL YTKACEIsVoiceButton(UIView *view) {
+    if (![view isKindOfClass:UIControl.class]) return NO;
+    UIControl *control = (UIControl *)view;
+    for (id target in control.allTargets) {
+        for (NSString *action in [control actionsForTarget:target forControlEvent:UIControlEventTouchUpInside]) {
+            if ([action.lowercaseString containsString:@"voice"]) return YES;
+        }
+    }
+    return NO;
+}
+
+static void YTKACERightButtonsLayout(id receiver, SEL selector) {
+    if (YTKACEVoiceSearchHidden() && [receiver isKindOfClass:UIView.class]) {
+        for (UIView *button in ((UIView *)receiver).subviews) {
+            if (YTKACEIsVoiceButton(button)) button.hidden = YES;
+        }
+    }
+    if (OriginalRightButtonsLayout != NULL) ((void (*)(id, SEL))OriginalRightButtonsLayout)(receiver, selector);
+}
+
+static IMP OriginalSearchViewLayout;
+
+// The search screen's round mic sits right of the search bar; hide it and
+// let the bar take its space.
+static void YTKACESearchViewLayout(id receiver, SEL selector) {
+    if (OriginalSearchViewLayout != NULL) ((void (*)(id, SEL))OriginalSearchViewLayout)(receiver, selector);
+    if (!YTKACEVoiceSearchHidden() || ![receiver isKindOfClass:UIView.class]) return;
+    for (UIView *row in ((UIView *)receiver).subviews) {
+        UIView *mic = nil;
+        for (UIView *child in row.subviews) {
+            if (YTKACEIsVoiceButton(child)) mic = child;
+        }
+        if (mic == nil) continue;
+        mic.hidden = YES;
+        for (UIView *child in row.subviews) {
+            if (child == mic || child.hidden) continue;
+            CGRect frame = child.frame;
+            if (CGRectGetMaxX(frame) <= CGRectGetMinX(mic.frame) && CGRectGetWidth(frame) > 100.0) {
+                frame.size.width = CGRectGetMaxX(mic.frame) - CGRectGetMinX(frame);
+                child.frame = frame;
+            }
+        }
+    }
+}
+
+static void YTKACESearchBarLayout(id receiver, SEL selector) {
+    if (OriginalSearchBarLayout != NULL) ((void (*)(id, SEL))OriginalSearchBarLayout)(receiver, selector);
+    if (!YTKACEVoiceSearchHidden()) return;
+    SEL getter = NSSelectorFromString(@"voiceButton");
+    id button = [receiver respondsToSelector:getter] ? ((id (*)(id, SEL))objc_msgSend)(receiver, getter) : nil;
+    if ([button isKindOfClass:UIView.class]) ((UIView *)button).hidden = YES;
 }
 
 static void YTKACESubsSetChipFilterView(__unsafe_unretained id receiver, SEL selector,
@@ -3128,7 +3452,7 @@ static void YTKACESubsChipFilter(__unsafe_unretained id receiver, SEL selector,
 
 static void YTKACEMaximumSubheaderHeight(__unsafe_unretained id receiver,
                                         SEL selector, double height) {
-    BOOL hide = YTKACEHideTopics();
+    BOOL hide = YTKACEHideTopicsHeaderFor(receiver);
     if (hide) height = 0.0;
     if (OriginalMaximumSubheaderHeight != NULL) {
         ((void (*)(id, SEL, double))OriginalMaximumSubheaderHeight)(
@@ -3141,7 +3465,7 @@ static void YTKACESetHeaderHeights(id receiver, SEL selector,
                                     double subheaderHeight,
                                     double topOffset,
                                     BOOL animated) {
-    if (YTKACEHideTopics()) {
+    if (YTKACEHideTopicsHeaderFor(receiver)) {
         subheaderHeight = 0.0;
     }
     if (OriginalSetHeaderHeights != NULL) {
@@ -3151,7 +3475,7 @@ static void YTKACESetHeaderHeights(id receiver, SEL selector,
 }
 
 static BOOL YTKACEShouldHideSubheader(id receiver, SEL selector) {
-    if (YTKACEHideTopics()) return YES;
+    if (YTKACEHideTopicsHeaderFor(receiver)) return YES;
     return OriginalShouldHideSubheader != NULL &&
         ((BOOL (*)(id, SEL))OriginalShouldHideSubheader)(receiver, selector);
 }
@@ -3274,6 +3598,11 @@ void YTKACEInstallContentVisibilityHooks(void) {
                               @"sectionControllersForSectionRenderers:reloadingSectionControllerByRenderer:",
                               (IMP)YTKACESectionControllers,
                               &OriginalSectionControllers);
+    YTKACEInstallInstanceHook(@"YTVariableHeightHeaderViewController",
+                              @"totalHeaderHeightWithParentHeight:headerHeight:subheaderHeight:",
+                              (IMP)YTKACETotalHeaderHeight, &OriginalTotalHeaderHeight);
+    YTKACEInstallInstanceHook(@"YTHeaderContentComboViewController", @"activeSubheaderViewFromProvider",
+                              (IMP)YTKACEActiveSubheaderView, &OriginalActiveSubheaderView);
     YTKACEInstallInstanceHook(@"YTHeaderContentComboView",
                               @"enableSubheaderBarWithView:",
                               (IMP)YTKACEEnableSubheaderBar,
@@ -3282,6 +3611,10 @@ void YTKACEInstallContentVisibilityHooks(void) {
                               @"updateWithCollectionViewController:feedFilterChipBarHost:feedFilterChipBarRenderer:browseIdentifier:sectionList:",
                               (IMP)YTKACEChipBarUpdate,
                               &OriginalChipBarUpdate);
+    YTKACEInstallInstanceHook(@"YTFeedFilterChipBarControllerImpl",
+                              @"updateWithCollectionViewController:feedFilterChipBarHost:feedFilterChipBarRenderer:browseIdentifier:sectionList:",
+                              (IMP)YTKACEChipBarImplUpdate,
+                              &OriginalChipBarImplUpdate);
     YTKACEInstallInstanceHook(@"YTChipCloudCell",
                               @"setEntry:",
                               (IMP)YTKACEChipCloudSetEntry,
@@ -3298,10 +3631,6 @@ void YTKACEInstallContentVisibilityHooks(void) {
                               @"framesForChipViewsWithWidth:",
                               (IMP)YTKACEChipViewFrames,
                               &OriginalChipViewFrames);
-    YTKACEInstallInstanceHook(@"YTHeaderContentComboView",
-                              @"setFeedHeaderScrollMode:",
-                              (IMP)YTKACEFeedHeaderScrollMode,
-                              &OriginalFeedHeaderScrollMode);
     YTKACEInstallInstanceHook(@"YTHeaderContentComboView",
                               @"setMaximumSubheaderHeight:",
                               (IMP)YTKACEMaximumSubheaderHeight,
@@ -3322,6 +3651,18 @@ void YTKACEInstallContentVisibilityHooks(void) {
                               @"shouldHideSubHeader",
                               (IMP)YTKACEShouldHideSubheader,
                               &OriginalShouldHideSubheader);
+    YTKACEInstallInstanceHook(@"YTRightNavigationButtons", @"layoutSubviews",
+                              (IMP)YTKACERightButtonsLayout, &OriginalRightButtonsLayout);
+    YTKACEInstallInstanceHook(@"YTSearchView", @"layoutSubviews",
+                              (IMP)YTKACESearchViewLayout, &OriginalSearchViewLayout);
+    YTKACEInstallInstanceHook(@"YTSearchBarView", @"layoutSubviews",
+                              (IMP)YTKACESearchBarLayout, &OriginalSearchBarLayout);
+    YTKACEInstallInstanceHook(@"YTMySubsFilterHeaderViewController", @"loadElementRenderer:",
+                              (IMP)YTKACESubsLoadElement, &OriginalSubsLoadElement);
+    YTKACEInstallInstanceHook(@"YTMySubsFilterHeaderView", @"sizeThatFits:",
+                              (IMP)YTKACESubsHeaderSize, &OriginalSubsHeaderSize);
+    YTKACEInstallInstanceHook(@"YTMySubsFilterHeaderView", @"layoutSubviews",
+                              (IMP)YTKACESubsHeaderLayout, &OriginalSubsHeaderLayout);
     YTKACEInstallInstanceHook(@"YTMySubsFilterHeaderView",
                               @"setChipFilterView:",
                               (IMP)YTKACESubsSetChipFilterView,
